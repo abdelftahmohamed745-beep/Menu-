@@ -21,8 +21,8 @@ export const AdminQrPage: React.FC = () => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
   const origin = window.location.origin;
-  const menuSlug = venue?.slug || 'my-restaurant';
-  const menuUrl = `${origin}/menu/${menuSlug}`;
+  const menuSlug = venue?.id || venue?.slug || '';
+  const menuUrl = menuSlug ? `${origin}/menu/${menuSlug}` : '';
 
   // Generate QR Code
   useEffect(() => {

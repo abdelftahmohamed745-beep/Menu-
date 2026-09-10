@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { Venue, Category, Product, FilterTag, AdminStats } from '../types';
 import { menuRepository } from '../repositories';
 
@@ -11,11 +11,12 @@ interface MenuContextValue {
   stats: AdminStats | null;
   isLoading: boolean;
   error: string | null;
+  loadRestaurant: (idOrSlug: string) => Promise<boolean>;
   refreshData: () => Promise<void>;
   
   // Venue actions
   updateVenue: (venue: Venue) => Promise<Venue>;
-  switchVenue: (venueId: string) => Promise<void>;
+  switchVenue: (venueId: string) => Promise<boolean>;
   createWorkspace: (data?: Partial<Venue>) => Promise<Venue>;
   deleteWorkspace: (venueId: string) => Promise<void>;
   
@@ -51,116 +52,151 @@ export const MenuProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [products, setProducts] = useState<Product[]>([]);
   const [filterTags, setFilterTags] = useState<FilterTag[]>([]);
   const [stats, setStats] = useState<AdminStats | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadAll = useCallback(async (targetVenueId?: string) => {
+  const activeVenueIdRef = useRef<string | null>(null);
+  activeVenueIdRef.current = venue?.id || null;
+
+  // Explicitly load a specific restaurant by its ID or Slug without any fallback
+  const loadRestaurant = useCallback(async (idOrSlug: string): Promise<boolean> => {
+    if (!idOrSlug) {
+      setVenue(null);
+      setCategories([]);
+      setProducts([]);
+      setFilterTags([]);
+      setStats(null);
+      setIsLoading(false);
+      return false;
+    }
+
     try {
       setIsLoading(true);
       setError(null);
 
-      // 1. Fetch all venues
-      const venuesList = await menuRepository.getAllVenues();
-      setAllVenues(venuesList);
-
-      // 2. Select active venue
-      let activeVenue: Venue | null = null;
-      const desiredId = targetVenueId || sessionStorage.getItem('active_admin_venue_id') || localStorage.getItem('my_menu_workspace_id');
-
-      if (desiredId) {
-        activeVenue = await menuRepository.getVenueById(desiredId);
+      const targetVenue = await menuRepository.getVenueBySlug(idOrSlug);
+      if (!targetVenue) {
+        setVenue(null);
+        setCategories([]);
+        setProducts([]);
+        setFilterTags([]);
+        setStats(null);
+        return false;
       }
 
-      if (!activeVenue && venuesList.length > 0) {
-        activeVenue = venuesList[0];
-      }
+      setVenue(targetVenue);
 
-      if (!activeVenue) {
-        activeVenue = await menuRepository.getOrCreateUserWorkspace();
-      }
+      // Strictly load subcollections belonging to this venueId only
+      const [cats, prods, tags, calculatedStats] = await Promise.all([
+        menuRepository.getCategories(targetVenue.id),
+        menuRepository.getProducts(targetVenue.id),
+        menuRepository.getFilterTags(targetVenue.id),
+        menuRepository.getAdminStats(targetVenue.id),
+      ]);
 
-      setVenue(activeVenue);
-      if (activeVenue) {
-        sessionStorage.setItem('active_admin_venue_id', activeVenue.id);
-        const [cats, prods, tags, calculatedStats] = await Promise.all([
-          menuRepository.getCategories(activeVenue.id),
-          menuRepository.getProducts(activeVenue.id),
-          menuRepository.getFilterTags(activeVenue.id),
-          menuRepository.getAdminStats(activeVenue.id),
-        ]);
-
-        setCategories(cats);
-        setProducts(prods);
-        setFilterTags(tags);
-        setStats(calculatedStats);
-      }
+      setCategories(cats);
+      setProducts(prods);
+      setFilterTags(tags);
+      setStats(calculatedStats);
+      return true;
     } catch (err: unknown) {
-      console.error('Error loading menu context data:', err);
-      const msg = err instanceof Error ? err.message : 'حدث خطأ أثناء تحميل البيانات';
+      console.error('Error loading restaurant:', err);
+      const msg = err instanceof Error ? err.message : 'حدث خطأ أثناء تحميل بيانات المطعم';
       setError(msg);
+      setVenue(null);
+      return false;
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  // Refresh current active restaurant's data
+  const refreshData = useCallback(async (): Promise<void> => {
+    const currentId = activeVenueIdRef.current;
+    if (currentId) {
+      await loadRestaurant(currentId);
+    }
+  }, [loadRestaurant]);
+
+  // Load all venues list for the admin workspaces list if needed
+  const fetchAllVenues = useCallback(async () => {
+    try {
+      const list = await menuRepository.getAllVenues();
+      setAllVenues(list);
+    } catch (err) {
+      console.error('Failed to list all venues:', err);
+    }
+  }, []);
+
   useEffect(() => {
-    loadAll();
+    fetchAllVenues();
 
     const handleDataChanged = () => {
-      loadAll();
+      if (activeVenueIdRef.current) {
+        loadRestaurant(activeVenueIdRef.current);
+      }
+      fetchAllVenues();
     };
 
     window.addEventListener('menu_data_changed', handleDataChanged);
-    window.addEventListener('storage', handleDataChanged);
-
     return () => {
       window.removeEventListener('menu_data_changed', handleDataChanged);
-      window.removeEventListener('storage', handleDataChanged);
     };
-  }, [loadAll]);
+  }, [fetchAllVenues, loadRestaurant]);
 
   // Venue actions
   const updateVenue = async (newVenue: Venue): Promise<Venue> => {
     const updated = await menuRepository.updateVenue(newVenue);
     setVenue(updated);
-    const list = await menuRepository.getAllVenues();
-    setAllVenues(list);
+    await fetchAllVenues();
     return updated;
   };
 
-  const switchVenue = async (venueId: string): Promise<void> => {
-    sessionStorage.setItem('active_admin_venue_id', venueId);
-    await loadAll(venueId);
+  const switchVenue = async (venueId: string): Promise<boolean> => {
+    return await loadRestaurant(venueId);
   };
 
   const createWorkspace = async (data?: Partial<Venue>): Promise<Venue> => {
     const created = await menuRepository.createVenue(data);
-    await switchVenue(created.id);
+    await loadRestaurant(created.id);
+    await fetchAllVenues();
     return created;
   };
 
   const deleteWorkspace = async (venueId: string): Promise<void> => {
     await menuRepository.deleteVenue(venueId);
-    sessionStorage.removeItem('active_admin_venue_id');
-    await loadAll();
+    if (activeVenueIdRef.current === venueId) {
+      setVenue(null);
+      setCategories([]);
+      setProducts([]);
+      setFilterTags([]);
+      setStats(null);
+    }
+    await fetchAllVenues();
   };
 
-  // Category actions
+  // Category actions strictly scoped to active venue
   const createCategory = async (data: Omit<Category, 'id' | 'createdAt'>): Promise<Category> => {
-    const created = await menuRepository.createCategory(data);
-    await loadAll();
+    if (!venue) throw new Error('لا يوجد مطعم نشط لإضافة القسم');
+    const created = await menuRepository.createCategory({
+      ...data,
+      venueId: data.venueId || venue.id,
+    });
+    await loadRestaurant(venue.id);
     return created;
   };
 
   const updateCategory = async (id: string, updates: Partial<Category>): Promise<Category> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لتعديل القسم');
     const updated = await menuRepository.updateCategory(id, updates);
-    await loadAll();
+    await loadRestaurant(venue.id);
     return updated;
   };
 
   const deleteCategory = async (id: string): Promise<void> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لحذف القسم');
     await menuRepository.deleteCategory(id);
-    await loadAll();
+    await loadRestaurant(venue.id);
   };
 
   const reorderCategories = async (categoryIds: string[]): Promise<Category[]> => {
@@ -170,53 +206,66 @@ export const MenuProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return reordered;
   };
 
-  // Product actions
+  // Product actions strictly scoped to active venue
   const createProduct = async (data: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>): Promise<Product> => {
-    const created = await menuRepository.createProduct(data);
-    await loadAll();
+    if (!venue) throw new Error('لا يوجد مطعم نشط لإضافة الصنف');
+    const created = await menuRepository.createProduct({
+      ...data,
+      venueId: data.venueId || venue.id,
+    });
+    await loadRestaurant(venue.id);
     return created;
   };
 
   const updateProduct = async (id: string, updates: Partial<Product>): Promise<Product> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لتعديل الصنف');
     const updated = await menuRepository.updateProduct(id, updates);
-    await loadAll();
+    await loadRestaurant(venue.id);
     return updated;
   };
 
   const deleteProduct = async (id: string): Promise<void> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لحذف الصنف');
     await menuRepository.deleteProduct(id);
-    await loadAll();
+    await loadRestaurant(venue.id);
   };
 
   const toggleProductVisibility = async (id: string): Promise<Product> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لتعديل الصنف');
     const updated = await menuRepository.toggleProductVisibility(id);
-    await loadAll();
+    await loadRestaurant(venue.id);
     return updated;
   };
 
   const reorderProducts = async (categoryId: string, productIds: string[]): Promise<Product[]> => {
     if (!venue) return [];
     const updated = await menuRepository.reorderProducts(venue.id, categoryId, productIds);
-    await loadAll();
+    await loadRestaurant(venue.id);
     return updated;
   };
 
-  // Filter tag actions
+  // Filter tag actions strictly scoped to active venue
   const createFilterTag = async (data: Omit<FilterTag, 'id' | 'createdAt'>): Promise<FilterTag> => {
-    const created = await menuRepository.createFilterTag(data);
-    await loadAll();
+    if (!venue) throw new Error('لا يوجد مطعم نشط لإضافة الفلتر');
+    const created = await menuRepository.createFilterTag({
+      ...data,
+      venueId: data.venueId || venue.id,
+    });
+    await loadRestaurant(venue.id);
     return created;
   };
 
   const updateFilterTag = async (id: string, updates: Partial<FilterTag>): Promise<FilterTag> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لتعديل الفلتر');
     const updated = await menuRepository.updateFilterTag(id, updates);
-    await loadAll();
+    await loadRestaurant(venue.id);
     return updated;
   };
 
   const deleteFilterTag = async (id: string): Promise<void> => {
+    if (!venue) throw new Error('لا يوجد مطعم نشط لحذف الفلتر');
     await menuRepository.deleteFilterTag(id);
-    await loadAll();
+    await loadRestaurant(venue.id);
   };
 
   const reorderFilterTags = async (tagIds: string[]): Promise<FilterTag[]> => {
@@ -227,8 +276,9 @@ export const MenuProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const resetToInitialData = async (): Promise<void> => {
-    await menuRepository.resetToInitialData();
-    await loadAll();
+    if (!venue) throw new Error('لا يوجد مطعم نشط لإعادة التعيين');
+    await menuRepository.resetToInitialData(venue.id);
+    await loadRestaurant(venue.id);
   };
 
   const value: MenuContextValue = {
@@ -240,7 +290,8 @@ export const MenuProvider: React.FC<{ children: React.ReactNode }> = ({ children
     stats,
     isLoading,
     error,
-    refreshData: loadAll,
+    loadRestaurant,
+    refreshData,
     updateVenue,
     switchVenue,
     createWorkspace,

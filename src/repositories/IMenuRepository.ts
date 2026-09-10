@@ -36,5 +36,5 @@ export interface IMenuRepository {
   // Aggregated
   getMenuDataBySlug(slug: string): Promise<MenuData | null>;
   getAdminStats(venueId: string): Promise<AdminStats>;
-  resetToInitialData(): Promise<MenuData>;
+  resetToInitialData(venueId?: string): Promise<MenuData>;
 }

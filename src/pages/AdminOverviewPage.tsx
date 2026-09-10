@@ -108,7 +108,7 @@ export const AdminOverviewPage: React.FC = () => {
         <h3 className="text-sm font-bold text-neutral-900 mb-3.5">إجراءات سريعة</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Link
-            to="/admin/products?action=new"
+            to={venue ? `/admin/${venue.id}/products?action=new` : '#'}
             className="flex items-center gap-3 p-3 rounded-xl border border-neutral-200 hover:border-amber-300 hover:bg-amber-50/50 transition-colors text-right"
           >
             <div className="w-9 h-9 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0">
@@ -121,7 +121,7 @@ export const AdminOverviewPage: React.FC = () => {
           </Link>
 
           <Link
-            to="/admin/categories?action=new"
+            to={venue ? `/admin/${venue.id}/categories?action=new` : '#'}
             className="flex items-center gap-3 p-3 rounded-xl border border-neutral-200 hover:border-amber-300 hover:bg-amber-50/50 transition-colors text-right"
           >
             <div className="w-9 h-9 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center flex-shrink-0">
@@ -134,7 +134,7 @@ export const AdminOverviewPage: React.FC = () => {
           </Link>
 
           <Link
-            to="/admin/venue"
+            to={venue ? `/admin/${venue.id}/venue` : '#'}
             className="flex items-center gap-3 p-3 rounded-xl border border-neutral-200 hover:border-amber-300 hover:bg-amber-50/50 transition-colors text-right"
           >
             <div className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0">
@@ -147,7 +147,7 @@ export const AdminOverviewPage: React.FC = () => {
           </Link>
 
           <Link
-            to="/admin/qr"
+            to={venue ? `/admin/${venue.id}/qr` : '#'}
             className="flex items-center gap-3 p-3 rounded-xl border border-neutral-200 hover:border-amber-300 hover:bg-amber-50/50 transition-colors text-right"
           >
             <div className="w-9 h-9 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center flex-shrink-0">
@@ -169,7 +169,7 @@ export const AdminOverviewPage: React.FC = () => {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-neutral-900">الأقسام وترتيبها</h3>
               <Link
-                to="/admin/categories"
+                to={venue ? `/admin/${venue.id}/categories` : '#'}
                 className="text-xs text-amber-700 hover:text-amber-800 font-semibold flex items-center gap-1"
               >
                 <span>إدارة الأقسام</span>
@@ -204,7 +204,7 @@ export const AdminOverviewPage: React.FC = () => {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-neutral-900">آخر المنتجات وحالة الظهور</h3>
               <Link
-                to="/admin/products"
+                to={venue ? `/admin/${venue.id}/products` : '#'}
                 className="text-xs text-amber-700 hover:text-amber-800 font-semibold flex items-center gap-1"
               >
                 <span>كل المنتجات ({products.length})</span>

@@ -344,7 +344,7 @@ export const CustomerMenuPage: React.FC = () => {
       <AdminLoginModal
         isOpen={isAdminModalOpen}
         onClose={() => setIsAdminModalOpen(false)}
-        redirectPath="/admin"
+        redirectPath={`/admin/${venue.id}`}
       />
     </div>
   );

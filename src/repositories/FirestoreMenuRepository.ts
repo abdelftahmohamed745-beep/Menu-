@@ -40,6 +40,24 @@ function removeUndefined<T extends Record<string, any>>(obj: T): Record<string, 
   return cleaned;
 }
 
+export function generateRestaurantId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  const cryptoObj = typeof window !== 'undefined' && window.crypto ? window.crypto : null;
+  if (cryptoObj && cryptoObj.getRandomValues) {
+    const values = new Uint8Array(12);
+    cryptoObj.getRandomValues(values);
+    for (let i = 0; i < 12; i++) {
+      result += chars[values[i] % chars.length];
+    }
+  } else {
+    for (let i = 0; i < 12; i++) {
+      result += chars[Math.floor(Math.random() * chars.length)];
+    }
+  }
+  return result;
+}
+
 export class FirestoreMenuRepository implements IMenuRepository {
   // ----------------------------------------------------
   // Venue & Workspaces
@@ -59,14 +77,13 @@ export class FirestoreMenuRepository implements IMenuRepository {
   }
 
   async createVenue(data?: Partial<Venue>): Promise<Venue> {
-    const id = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const randomSuffix = Math.random().toString(36).slice(2, 7);
-    const slug = data?.slug || `menu-${randomSuffix}`;
+    const id = data?.id || generateRestaurantId();
+    const slug = data?.slug || id;
     const path = `venues/${id}`;
 
     const newVenue: Venue = {
       id,
-      name: data?.name || 'مطعمي',
+      name: data?.name || 'مطعم جديد',
       slug,
       description: data?.description || 'مرحباً بكم في قائمتنا الرقمية',
       currency: data?.currency || 'SAR',
@@ -120,32 +137,12 @@ export class FirestoreMenuRepository implements IMenuRepository {
   }
 
   async getOrCreateUserWorkspace(): Promise<Venue> {
-    const STORAGE_KEY = 'my_menu_workspace_id';
-    let localId: string | null = null;
-    try {
-      localId = localStorage.getItem(STORAGE_KEY);
-    } catch {
-      // Storage unavailable
-    }
-
-    if (localId) {
-      const existing = await this.getVenueById(localId);
-      if (existing) {
-        return existing;
-      }
-    }
-
-    // Otherwise create a completely clean, isolated, empty workspace for this new user
     const newVenue = await this.createVenue();
-    try {
-      localStorage.setItem(STORAGE_KEY, newVenue.id);
-    } catch {
-      // Fallback
-    }
     return newVenue;
   }
 
   async getVenueById(id: string): Promise<Venue | null> {
+    if (!id || typeof id !== 'string') return null;
     const path = `venues/${id}`;
     try {
       const docRef = doc(db, 'venues', id);
@@ -153,17 +150,6 @@ export class FirestoreMenuRepository implements IMenuRepository {
       if (snapshot.exists()) {
         return snapshot.data() as Venue;
       }
-
-      // If main venue doesn't exist yet, seed the clean default venue
-      if (id === 'venue_main' || id === 'venue_al_areej') {
-        const initialVenue: Venue = {
-          ...CLEAN_DEFAULT_VENUE,
-          id: id,
-        };
-        await setDoc(docRef, removeUndefined(initialVenue));
-        return initialVenue;
-      }
-
       return null;
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);
@@ -171,19 +157,24 @@ export class FirestoreMenuRepository implements IMenuRepository {
   }
 
   async getVenueBySlug(slug: string): Promise<Venue | null> {
+    if (!slug || typeof slug !== 'string') return null;
     const path = 'venues';
     try {
+      // 1. Try direct lookup by document ID (since Restaurant ID is used as unique URL identifier)
+      const docRef = doc(db, 'venues', slug);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        return docSnap.data() as Venue;
+      }
+
+      // 2. Try query by slug field
       const q = query(collection(db, 'venues'), where('slug', '==', slug));
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
         return snapshot.docs[0].data() as Venue;
       }
 
-      // If fallback for initial default slug
-      if (slug === 'my-restaurant') {
-        return await this.getVenueById('venue_main');
-      }
-
+      // Strictly return null - NEVER fallback to any other restaurant
       return null;
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, path);
@@ -521,19 +512,40 @@ export class FirestoreMenuRepository implements IMenuRepository {
     };
   }
 
-  async resetToInitialData(): Promise<MenuData> {
-    // Reset to clean empty database state for this venue
-    const venue = await this.getVenueById('venue_main');
-    if (!venue) {
-      await setDoc(doc(db, 'venues', 'venue_main'), removeUndefined(CLEAN_DEFAULT_VENUE));
+  async resetToInitialData(venueId?: string): Promise<MenuData> {
+    if (!venueId) {
+      throw new Error('يجب تحديد معرف المطعم لإعادة التعيين');
     }
 
-    return {
-      venue: venue || CLEAN_DEFAULT_VENUE,
-      categories: [],
-      products: [],
-      filterTags: [],
-    };
+    const path = `venues/${venueId}`;
+    try {
+      const catQuery = query(collection(db, 'categories'), where('venueId', '==', venueId));
+      const catSnap = await getDocs(catQuery);
+      const batch = writeBatch(db);
+      catSnap.forEach((d) => batch.delete(doc(db, 'categories', d.id)));
+
+      const prodQuery = query(collection(db, 'products'), where('venueId', '==', venueId));
+      const prodSnap = await getDocs(prodQuery);
+      prodSnap.forEach((d) => batch.delete(doc(db, 'products', d.id)));
+
+      const tagQuery = query(collection(db, 'filterTags'), where('venueId', '==', venueId));
+      const tagSnap = await getDocs(tagQuery);
+      tagSnap.forEach((d) => batch.delete(doc(db, 'filterTags', d.id)));
+
+      await batch.commit();
+
+      const venue = await this.getVenueById(venueId);
+      window.dispatchEvent(new CustomEvent('menu_data_changed'));
+
+      return {
+        venue: venue!,
+        categories: [],
+        products: [],
+        filterTags: [],
+      };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
   }
 }
 

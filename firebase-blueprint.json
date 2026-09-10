@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "venue": {
+      "title": "Venue",
+      "description": "Restaurant or cafe profile and branding settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "slug": { "type": "string" },
+        "description": { "type": "string" },
+        "currency": { "type": "string" },
+        "currencySymbol": { "type": "string" },
+        "coverImage": { "type": "string" },
+        "profileImage": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "openingHours": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "slug", "currency"]
+    },
+    "category": {
+      "title": "Category",
+      "description": "Menu categories for organizing products",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "venueId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "displayOrder": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "venueId", "name", "displayOrder"]
+    },
+    "product": {
+      "title": "Product",
+      "description": "Dishes, drinks, and food items in the menu",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "venueId": { "type": "string" },
+        "categoryId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "image": { "type": "string" },
+        "filterTagIds": { "type": "array" },
+        "isVisible": { "type": "boolean" },
+        "displayOrder": { "type": "number" },
+        "calories": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "venueId", "categoryId", "name", "price", "isVisible", "displayOrder"]
+    },
+    "filterTag": {
+      "title": "FilterTag",
+      "description": "Dynamic filter badges such as bestseller, vegetarian, spicy",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "venueId": { "type": "string" },
+        "name": { "type": "string" },
+        "emoji": { "type": "string" },
+        "color": { "type": "string" },
+        "textColor": { "type": "string" },
+        "displayOrder": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "venueId", "name", "color", "displayOrder"]
+    }
+  },
+  "firestore": {
+    "/venues/{venueId}": {
+      "schema": { "$ref": "#/entities/venue" },
+      "description": "Collection of restaurant and cafe venues"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/category" },
+      "description": "Collection of menu categories"
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/product" },
+      "description": "Collection of menu products and items"
+    },
+    "/filterTags/{filterTagId}": {
+      "schema": { "$ref": "#/entities/filterTag" },
+      "description": "Collection of tags for categorizing and filtering items"
+    }
+  }
+}

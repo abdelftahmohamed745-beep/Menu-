@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    function isValidVenue(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 150
+        && data.slug is string && data.slug.size() > 0 && data.slug.size() <= 100
+        && data.currency is string && data.currency.size() > 0 && data.currency.size() <= 10;
+    }
+
+    function isValidCategory(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.venueId is string && data.venueId.size() > 0 && data.venueId.size() <= 128
+        && data.displayOrder is number;
+    }
+
+    function isValidProduct(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 150
+        && data.venueId is string && data.venueId.size() > 0 && data.venueId.size() <= 128
+        && data.categoryId is string && data.categoryId.size() > 0 && data.categoryId.size() <= 128
+        && data.price is number && data.price >= 0
+        && data.isVisible is bool
+        && data.displayOrder is number;
+    }
+
+    function isValidFilterTag(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 50
+        && data.venueId is string && data.venueId.size() > 0 && data.venueId.size() <= 128
+        && data.displayOrder is number;
+    }
+
+    // Venues collection
+    match /venues/{venueId} {
+      allow get: if isValidId(venueId);
+      allow list: if true;
+      allow create: if isValidId(venueId) && isValidVenue(incoming());
+      allow update: if isValidId(venueId) && isValidVenue(incoming());
+      allow delete: if isValidId(venueId);
+    }
+
+    // Categories collection
+    match /categories/{categoryId} {
+      allow get: if isValidId(categoryId);
+      allow list: if true;
+      allow create: if isValidId(categoryId) && isValidCategory(incoming());
+      allow update: if isValidId(categoryId) && isValidCategory(incoming());
+      allow delete: if isValidId(categoryId);
+    }
+
+    // Products collection
+    match /products/{productId} {
+      allow get: if isValidId(productId);
+      allow list: if true;
+      allow create: if isValidId(productId) && isValidProduct(incoming());
+      allow update: if isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isValidId(productId);
+    }
+
+    // Filter Tags collection
+    match /filterTags/{filterTagId} {
+      allow get: if isValidId(filterTagId);
+      allow list: if true;
+      allow create: if isValidId(filterTagId) && isValidFilterTag(incoming());
+      allow update: if isValidId(filterTagId) && isValidFilterTag(incoming());
+      allow delete: if isValidId(filterTagId);
+    }
+
+    // Test connection endpoint
+    match /test/{testId} {
+      allow read: if isValidId(testId);
+    }
+  }
+}

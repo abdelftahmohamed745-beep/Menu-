@@ -1,0 +1,6 @@
+{
+  "name": "منيو إلكتروني للمطاعم والكافيهات",
+  "description": "تطبيق منيو رقمي متجاوب للمطاعم والكافيهات عبر QR Code مع لوحة تحكم وإدارة وقاعدة بيانات سحابية",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

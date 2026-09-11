@@ -388,8 +388,9 @@ export const AdminLayout: React.FC = () => {
         message={`هل أنت متأكد من رغبتك في حذف جميع أقسام ومنتجات وفلاتر "${venue.name}" والبدء بقائمة فارغة؟ هذا الإجراء يخص هذا المطعم فقط ولا يؤثر على أي مطعم آخر.`}
         confirmLabel="نعم، إعادة التعيين"
         cancelLabel="إلغاء"
-        isDangerous={true}
+        isDestructive={true}
         onConfirm={handleReset}
+        onClose={() => setIsResetConfirmOpen(false)}
         onCancel={() => setIsResetConfirmOpen(false)}
       />
     </div>

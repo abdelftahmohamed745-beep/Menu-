@@ -183,24 +183,59 @@ export const SuperAdminPage: React.FC = () => {
         body: JSON.stringify({ password: password.trim() }),
       });
 
-      const data = await res.json();
+      const contentType = res.headers.get('content-type') || '';
+      let data: any = {};
+      let isJson = false;
+
+      if (contentType.includes('application/json')) {
+        try {
+          data = await res.json();
+          isJson = true;
+        } catch {
+          isJson = false;
+        }
+      }
 
       if (res.ok && data.success) {
         setPassword('');
         await refreshSession();
         fetchRestaurants();
         showToast('تم تسجيل الدخول بنجاح كمدير عام (Super Admin)');
-      } else {
-        setLoginError(data.error || 'بيانات الاعتماد غير صالحة');
+        return;
+      }
+
+      // If response is not JSON (e.g. HTML 404 or index.html fallback)
+      if (!isJson) {
+        if (res.status === 404) {
+          setLoginError('خطأ 404: الدالة غير موجودة على مسار الخادم (تأكد من نشر مجلد api على Vercel)');
+        } else if (res.status === 500) {
+          setLoginError('خطأ 500: خطأ في الخادم أثناء التنفيذ (تحقق من سجلات Vercel)');
+        } else {
+          setLoginError(`خطأ ${res.status}: استجابة غير متوقعة من الخادم (ليست بصيغة JSON)`);
+        }
+        return;
+      }
+
+      // Handle JSON errors with exact HTTP codes
+      if (res.status === 404) {
+        setLoginError(`خطأ 404: الدالة غير موجودة (${data.error || 'Not Found'})`);
+      } else if (res.status === 500) {
+        setLoginError(data.error || 'خطأ 500: إعداد الخادم ناقص أو حدث خطأ داخلي');
         if (data.missingVariables) {
           setMissingConfigs(data.missingVariables);
         }
+      } else if (res.status === 429) {
+        setLoginError('خطأ 429: تم إيقاف المحاولات مؤقتًا بسبب تكرار المحاولات الفاشلة');
         if (data.retryAfter) {
           setLockoutTimer(data.retryAfter);
         }
+      } else if (res.status === 401) {
+        setLoginError('خطأ 401: كلمة مرور الإدارة العامة غير صحيحة');
+      } else {
+        setLoginError(data.error || `خطأ ${res.status} من الخادم`);
       }
-    } catch (err) {
-      setLoginError('تعذر الاتصال بالخادم، يرجى التحقق من الشبكة');
+    } catch (err: any) {
+      setLoginError(`تعذر الاتصال بالخادم (${err?.message || 'Network Error'}) - تحقق من اتصال الإنترنت أو رابط الموقع`);
     } finally {
       setIsSubmitting(false);
     }
@@ -539,9 +574,22 @@ export const SuperAdminPage: React.FC = () => {
           ))}
 
           {loginError && (
-            <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl flex items-center gap-2 text-right">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>{loginError}</span>
+            <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl space-y-2 text-right">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-400" />
+                <span className="font-semibold">{loginError}</span>
+              </div>
+              <div className="pt-1 border-t border-rose-500/20 flex items-center justify-between text-[11px]">
+                <span className="text-neutral-400">لفحص حالة دوال الخادم المباشرة:</span>
+                <a
+                  href="/api/health"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-amber-400 underline hover:text-amber-300"
+                >
+                  افتح /api/health
+                </a>
+              </div>
             </div>
           )}
 

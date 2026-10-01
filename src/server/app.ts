@@ -13,7 +13,7 @@ import {
   where,
   deleteField,
 } from 'firebase/firestore';
-import { serverDb } from './db';
+import { serverDb, getDatabaseMode } from './db';
 import {
   checkBruteForceFirestore,
   recordFailedLoginFirestore,
@@ -130,17 +130,60 @@ export function requireSuperAdmin(req: Request, res: Response, next: NextFunctio
 }
 
 // ---------------------------------------------------------------------------
-// Create & Configure Express Application
+// Create & Configure Express Application & Router
 // ---------------------------------------------------------------------------
 export const app = express();
 
 app.use(express.json());
 app.use(cookieParser());
 
+// Create an API Router to mount under both /api and / to prevent rewrite issues
+const apiRouter = express.Router();
+
+// ---------------------------------------------------------------------------
+// Health Check Endpoint (Diagnostics)
+// ---------------------------------------------------------------------------
+apiRouter.get('/health', async (req: Request, res: Response) => {
+  const missing: string[] = [];
+  if (!process.env.SUPER_ADMIN_PASSWORD || !process.env.SUPER_ADMIN_PASSWORD.trim()) {
+    missing.push('SUPER_ADMIN_PASSWORD');
+  }
+  if (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim()) {
+    missing.push('SESSION_SECRET');
+  }
+
+  let firestoreConnected = false;
+  let firestoreError: string | null = null;
+
+  try {
+    // Quick test read against Firestore
+    await getDoc(doc(serverDb, 'venues', 'test_health_connection'));
+    firestoreConnected = true;
+  } catch (err: any) {
+    firestoreError = err?.message || String(err);
+  }
+
+  const dbMode = getDatabaseMode();
+
+  const isOk = missing.length === 0 && firestoreConnected;
+
+  res.status(isOk ? 200 : 503).json({
+    ok: isOk,
+    status: isOk ? 'healthy' : 'degraded',
+    missingVariables: missing,
+    firestore: {
+      connected: firestoreConnected,
+      mode: dbMode.mode,
+      error: firestoreError,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Auth & Session Status APIs
 // ---------------------------------------------------------------------------
-app.get('/api/auth/session', (req: Request, res: Response) => {
+apiRouter.get('/auth/session', (req: Request, res: Response) => {
   const token = req.cookies?.[COOKIE_NAME];
   const session = parseSessionToken(token);
   if (!session) {
@@ -154,13 +197,13 @@ app.get('/api/auth/session', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/auth/logout', (req: Request, res: Response) => {
+apiRouter.post('/auth/logout', (req: Request, res: Response) => {
   res.clearCookie(COOKIE_NAME, { path: '/' });
   res.json({ success: true });
 });
 
 // Alternative login with restaurant password
-app.post('/api/admin/restaurant-login', (req: Request, res: Response) => {
+apiRouter.post('/admin/restaurant-login', (req: Request, res: Response) => {
   const { restaurantId, password } = req.body || {};
   if (!restaurantId || typeof password !== 'string') {
     res.status(400).json({ error: 'يرجى تقديم معرف المطعم وكلمة المرور' });
@@ -180,7 +223,7 @@ app.post('/api/admin/restaurant-login', (req: Request, res: Response) => {
 });
 
 // Client-side magic link consumption route (reliable across serverless & SPA)
-app.post('/api/auth/consume-magic-link', async (req: Request, res: Response) => {
+apiRouter.post('/auth/consume-magic-link', async (req: Request, res: Response) => {
   const { token } = req.body || {};
   if (!token || typeof token !== 'string') {
     res.status(400).json({ error: 'رمز الرابط مطلوب' });
@@ -232,7 +275,7 @@ app.post('/api/auth/consume-magic-link', async (req: Request, res: Response) => 
 // ---------------------------------------------------------------------------
 // Super Admin Endpoints
 // ---------------------------------------------------------------------------
-app.get('/api/super-admin/config-status', (req: Request, res: Response) => {
+apiRouter.get('/super-admin/config-status', (req: Request, res: Response) => {
   const missing: string[] = [];
   if (!process.env.SUPER_ADMIN_PASSWORD || !process.env.SUPER_ADMIN_PASSWORD.trim()) {
     missing.push('SUPER_ADMIN_PASSWORD');
@@ -246,7 +289,7 @@ app.get('/api/super-admin/config-status', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/super-admin/login', async (req: Request, res: Response) => {
+apiRouter.post('/super-admin/login', async (req: Request, res: Response) => {
   const missing: string[] = [];
   if (!process.env.SUPER_ADMIN_PASSWORD || !process.env.SUPER_ADMIN_PASSWORD.trim()) {
     missing.push('SUPER_ADMIN_PASSWORD');
@@ -286,17 +329,17 @@ app.post('/api/super-admin/login', async (req: Request, res: Response) => {
   res.json({ success: true, role: 'super_admin' });
 });
 
-app.post('/api/super-admin/logout', (req: Request, res: Response) => {
+apiRouter.post('/super-admin/logout', (req: Request, res: Response) => {
   res.clearCookie(COOKIE_NAME, { path: '/' });
   res.json({ success: true });
 });
 
-app.get('/api/super-admin/me', requireSuperAdmin, (req: Request, res: Response) => {
+apiRouter.get('/super-admin/me', requireSuperAdmin, (req: Request, res: Response) => {
   res.json({ isAuthenticated: true, role: 'super_admin' });
 });
 
 // List all restaurants with magic link status and public ID aliases
-app.get('/api/super-admin/restaurants', requireSuperAdmin, async (req: Request, res: Response) => {
+apiRouter.get('/super-admin/restaurants', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const venuesSnapshot = await getDocs(collection(serverDb, 'venues'));
     const linksSnapshot = await getDocs(collection(serverDb, 'restaurant_login_links'));
@@ -340,7 +383,7 @@ app.get('/api/super-admin/restaurants', requireSuperAdmin, async (req: Request, 
 });
 
 // Generate / Get magic link
-app.post('/api/super-admin/restaurants/:restaurantId/link', requireSuperAdmin, async (req: Request, res: Response) => {
+apiRouter.post('/super-admin/restaurants/:restaurantId/link', requireSuperAdmin, async (req: Request, res: Response) => {
   const { restaurantId } = req.params;
   if (!restaurantId) {
     res.status(400).json({ error: 'معرف المطعم مطلوب' });
@@ -382,7 +425,7 @@ app.post('/api/super-admin/restaurants/:restaurantId/link', requireSuperAdmin, a
 });
 
 // Regenerate magic link
-app.post('/api/super-admin/restaurants/:restaurantId/regenerate-link', requireSuperAdmin, async (req: Request, res: Response) => {
+apiRouter.post('/super-admin/restaurants/:restaurantId/regenerate-link', requireSuperAdmin, async (req: Request, res: Response) => {
   const { restaurantId } = req.params;
   if (!restaurantId) {
     res.status(400).json({ error: 'معرف المطعم مطلوب' });
@@ -422,7 +465,7 @@ app.post('/api/super-admin/restaurants/:restaurantId/regenerate-link', requireSu
 });
 
 // Toggle active status of magic link
-app.patch('/api/super-admin/restaurants/:restaurantId/link/toggle', requireSuperAdmin, async (req: Request, res: Response) => {
+apiRouter.patch('/super-admin/restaurants/:restaurantId/link/toggle', requireSuperAdmin, async (req: Request, res: Response) => {
   const { restaurantId } = req.params;
   if (!restaurantId) {
     res.status(400).json({ error: 'معرف المطعم مطلوب' });
@@ -455,7 +498,7 @@ app.patch('/api/super-admin/restaurants/:restaurantId/link/toggle', requireSuper
 // ---------------------------------------------------------------------------
 // Changeable Restaurant Public ID (Slug) Endpoints
 // ---------------------------------------------------------------------------
-app.post('/api/venues/:venueId/change-slug', async (req: Request, res: Response) => {
+apiRouter.post('/venues/:venueId/change-slug', async (req: Request, res: Response) => {
   const { venueId } = req.params;
   const { newSlug } = req.body || {};
 
@@ -491,7 +534,7 @@ app.post('/api/venues/:venueId/change-slug', async (req: Request, res: Response)
 });
 
 // Toggle alias redirect status
-app.patch('/api/venues/:venueId/aliases/:aliasSlug/toggle', async (req: Request, res: Response) => {
+apiRouter.patch('/venues/:venueId/aliases/:aliasSlug/toggle', async (req: Request, res: Response) => {
   const { venueId, aliasSlug } = req.params;
 
   const token = req.cookies?.[COOKIE_NAME];
@@ -520,7 +563,7 @@ app.patch('/api/venues/:venueId/aliases/:aliasSlug/toggle', async (req: Request,
 });
 
 // Get Audit Logs for Public ID Changes
-app.get('/api/super-admin/slug-audit-logs', requireSuperAdmin, async (req: Request, res: Response) => {
+apiRouter.get('/super-admin/slug-audit-logs', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const venueId = typeof req.query.venueId === 'string' ? req.query.venueId : undefined;
     const logs = await getSlugAuditLogs(venueId);
@@ -532,7 +575,7 @@ app.get('/api/super-admin/slug-audit-logs', requireSuperAdmin, async (req: Reque
 });
 
 // DB Migration Endpoint: Remove Access Codes & Seed Slugs
-app.post('/api/migrations/remove-access-codes', requireSuperAdmin, async (req: Request, res: Response) => {
+apiRouter.post('/migrations/remove-access-codes', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const venuesRef = collection(serverDb, 'venues');
     const snapshot = await getDocs(venuesRef);
@@ -581,10 +624,8 @@ app.post('/api/migrations/remove-access-codes', requireSuperAdmin, async (req: R
   }
 });
 
-// ---------------------------------------------------------------------------
-// Browser Magic Link Redirect: /r/:token
-// ---------------------------------------------------------------------------
-app.get('/r/:token', async (req: Request, res: Response) => {
+// Magic link redirect handler
+const magicLinkHandler = async (req: Request, res: Response) => {
   const { token } = req.params;
   if (!token || typeof token !== 'string') {
     res.redirect('/magic-link-error');
@@ -628,6 +669,13 @@ app.get('/r/:token', async (req: Request, res: Response) => {
     console.error('Error handling magic link:', err);
     res.redirect('/magic-link-error');
   }
-});
+};
+
+apiRouter.get('/r/:token', magicLinkHandler);
+app.get('/r/:token', magicLinkHandler);
+
+// Mount router under BOTH /api and / so it works regardless of Vercel rewrite stripping
+app.use('/api', apiRouter);
+app.use(apiRouter);
 
 export default app;

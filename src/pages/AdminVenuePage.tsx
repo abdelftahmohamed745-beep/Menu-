@@ -36,6 +36,7 @@ export const AdminVenuePage: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isDiscardConfirmOpen, setIsDiscardConfirmOpen] = useState<boolean>(false);
+  const [isSlugConfirmOpen, setIsSlugConfirmOpen] = useState<boolean>(false);
 
   // Initialize form
   useEffect(() => {
@@ -89,7 +90,7 @@ export const AdminVenuePage: React.FC = () => {
   // Form submission
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData) return;
+    if (!formData || !venue) return;
 
     if (!formData.name.trim()) {
       setErrorMessage('اسم المنشأة مطلوب.');
@@ -98,27 +99,61 @@ export const AdminVenuePage: React.FC = () => {
 
     const cleanSlug = formData.slug.trim().toLowerCase();
     if (!cleanSlug) {
-      setErrorMessage('الرابط المخصص (Slug) مطلوب.');
+      setErrorMessage('معرّف المطعم (Slug) مطلوب.');
       return;
     }
 
-    if (!/^[a-z0-9-_]+$/i.test(cleanSlug)) {
-      setErrorMessage('الرابط المخصص يجب أن يتكون من أحرف إنجليزية وأرقام وشرطات فقط.');
+    if (cleanSlug.length < 4 || cleanSlug.length > 32) {
+      setErrorMessage('طول معرّف المطعم يجب أن يكون بين 4 و 32 حرفاً أو رقماً.');
       return;
     }
 
+    if (!/^[a-z0-9][a-z0-9-]{2,30}[a-z0-9]$/.test(cleanSlug)) {
+      setErrorMessage('معرّف المطعم يجب أن يتكون من أحرف إنجليزية وأرقام وشرطات فقط، وبدون مسافات.');
+      return;
+    }
+
+    // If slug changed, trigger confirmation dialog before applying
+    if (venue.slug && cleanSlug !== venue.slug.toLowerCase()) {
+      setIsSlugConfirmOpen(true);
+      return;
+    }
+
+    // Otherwise save directly
+    await executeSave(cleanSlug);
+  };
+
+  const executeSave = async (targetSlug: string) => {
+    if (!formData || !venue) return;
     try {
       setIsSaving(true);
       setErrorMessage(null);
-      await updateVenue({ ...formData, slug: cleanSlug });
+
+      // If slug changed, call server endpoint for atomic transaction and alias registry
+      if (venue.slug && targetSlug !== venue.slug.toLowerCase()) {
+        const res = await fetch(`/api/venues/${venue.id}/change-slug`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ newSlug: targetSlug }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'فشل تحديث معرّف المطعم');
+        }
+      }
+
+      await updateVenue({ ...formData, slug: targetSlug });
       setHasUnsavedChanges(false);
-      setSuccessMessage('تم حفظ بيانات المنشأة بنجاح.');
+      setSuccessMessage('تم حفظ بيانات المنشأة ومعرّف المطعم بنجاح.');
       setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'فشل حفظ البيانات.';
       setErrorMessage(msg);
     } finally {
       setIsSaving(false);
+      setIsSlugConfirmOpen(false);
     }
   };
 
@@ -433,7 +468,7 @@ export const AdminVenuePage: React.FC = () => {
             <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <div className="leading-relaxed">
-                <strong>تنبيه هام حول تغيير الرابط:</strong> عند حفظ الرابط الجديد (<code>/{formData.slug}</code>)، لن يعود الرابط القديم صالحًا، وستحتاج إلى إعادة طباعة أو تحديث رموز الـ QR القديمة.
+                <strong>تنبيه تغيير معرّف المطعم:</strong> عند حفظ المعرّف الجديد (<code>/{formData.slug}</code>)، سيتم الاحتفاظ بالمعرّف القديم كتحويل تلقائي (Redirect Alias) حتى تظل رموز الـ QR المطبوعة تعمل دون انقطاع.
               </div>
             </div>
           )}
@@ -479,6 +514,17 @@ export const AdminVenuePage: React.FC = () => {
         title="إلغاء التغييرات غير المحفوظة؟"
         message="هل أنت متأكد من رغبتك في التراجع عن التعديلات وإعادة تعيين الحقول إلى القيم المحفوظة مسبقًا؟"
         confirmLabel="نعم، تراجع"
+        isDestructive={false}
+      />
+
+      {/* Public ID / Slug change confirmation dialog */}
+      <ConfirmDialog
+        isOpen={isSlugConfirmOpen}
+        onClose={() => setIsSlugConfirmOpen(false)}
+        onConfirm={() => executeSave(formData.slug.trim().toLowerCase())}
+        title="تأكيد تغيير معرّف المطعم (Public ID)"
+        message={`هل أنت متأكد من تغيير معرّف المطعم من «${venue?.slug}» إلى «${formData.slug.trim().toLowerCase()}»؟ سيصبح رابط المنيو الجديد (${window.location.origin}/menu/${formData.slug.trim().toLowerCase()}). وستظل رموز الـ QR المطبوعة القديمة تعمل وتحول الزوار تلقائياً طالما أن خيار التحويل مفعل.`}
+        confirmLabel={isSaving ? 'جاري التحديث...' : 'تأكيد وحفظ المعرّف الجديد'}
         isDestructive={false}
       />
     </div>

@@ -7,12 +7,14 @@ interface AdminLoginModalProps {
   isOpen: boolean;
   onClose: () => void;
   redirectPath?: string;
+  venueId?: string;
 }
 
 export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   isOpen,
   onClose,
   redirectPath = '/admin',
+  venueId,
 }) => {
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
@@ -23,7 +25,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -33,7 +35,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     }
 
     setIsSubmitting(true);
-    const success = login(password);
+    const success = await login(password, venueId);
 
     if (success) {
       setPassword('');
@@ -89,7 +91,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute left-2 text-neutral-400 hover:text-neutral-600 p-1"
-                aria-label={showPassword ? 'إخفاء الرمز' : 'إظهار الرمز'}
+                aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
               >
                 {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>

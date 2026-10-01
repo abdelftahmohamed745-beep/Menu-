@@ -2,10 +2,17 @@
  * Core Data Models & Types for Restaurant & Cafe Digital Menu
  */
 
-export interface Venue {
-  id: string;
-  name: string;
+export interface VenueSlugAlias {
   slug: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface Venue {
+  id: string; // Internal immutable ID (never changes)
+  name: string;
+  slug: string; // Changeable public ID
+  previousSlugs?: VenueSlugAlias[]; // Old IDs preserved as redirect aliases
   description: string;
   currency: string; // e.g. "SAR", "AED", "KWD", "EGP", "USD"
   currencySymbol?: string; // Optional display symbol override

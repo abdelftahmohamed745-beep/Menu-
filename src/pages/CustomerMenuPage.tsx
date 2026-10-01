@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { MenuData, Product } from '../types';
 import { menuRepository } from '../repositories';
 import { CustomerHeader } from '../components/customer/CustomerHeader';
@@ -15,6 +15,7 @@ import { SearchX, Coffee, Utensils } from 'lucide-react';
 
 export const CustomerMenuPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
+  const navigate = useNavigate();
   const [menuData, setMenuData] = useState<MenuData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isNotFound, setIsNotFound] = useState<boolean>(false);
@@ -44,6 +45,12 @@ export const CustomerMenuPage: React.FC = () => {
       } else {
         setMenuData(data);
         setIsNotFound(false);
+
+        // Smooth URL canonicalization if visited via an active old alias
+        if (data.venue.slug && slug.trim().toLowerCase() !== data.venue.slug.toLowerCase()) {
+          navigate(`/menu/${data.venue.slug}`, { replace: true });
+        }
+
         // Set first non-empty category as default active
         const visibleCategories = data.categories.filter((cat) =>
           data.products.some((p) => p.categoryId === cat.id && p.isVisible)
@@ -345,6 +352,7 @@ export const CustomerMenuPage: React.FC = () => {
         isOpen={isAdminModalOpen}
         onClose={() => setIsAdminModalOpen(false)}
         redirectPath={`/admin/${venue.id}`}
+        venueId={venue.id}
       />
     </div>
   );

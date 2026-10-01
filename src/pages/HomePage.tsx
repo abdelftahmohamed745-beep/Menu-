@@ -4,7 +4,7 @@ import { useMenu } from '../context/MenuContext';
 import { QrCode, Plus, ArrowLeft, Store, AlertCircle } from 'lucide-react';
 
 export const HomePage: React.FC = () => {
-  const [restaurantCode, setRestaurantCode] = useState<string>('');
+  const [restaurantIdInput, setRestaurantIdInput] = useState<string>('');
   const [isCreating, setIsCreating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const { createWorkspace } = useMenu();
@@ -13,12 +13,12 @@ export const HomePage: React.FC = () => {
   const handleLookup = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    const code = restaurantCode.trim();
-    if (!code) {
-      setErrorMsg('يرجى إدخال رمز أو معرف المطعم');
+    const idVal = restaurantIdInput.trim().toLowerCase();
+    if (!idVal) {
+      setErrorMsg('يرجى إدخال معرّف المطعم');
       return;
     }
-    navigate(`/menu/${code}`);
+    navigate(`/menu/${idVal}`);
   };
 
   const handleCreateNew = async () => {
@@ -30,7 +30,7 @@ export const HomePage: React.FC = () => {
         description: 'مرحباً بكم في قائمتنا الرقمية',
       });
       // Navigate to the newly created unique restaurant menu
-      navigate(`/menu/${newVenue.id}`);
+      navigate(`/menu/${newVenue.slug || newVenue.id}`);
     } catch (err) {
       console.error('Failed to create new restaurant:', err);
       setErrorMsg('حدث خطأ أثناء إنشاء المطعم، يرجى المحاولة لاحقاً');
@@ -53,7 +53,7 @@ export const HomePage: React.FC = () => {
             المنيو الرقمي
           </h1>
           <p className="text-xs text-neutral-500 leading-relaxed max-w-sm mx-auto">
-            منصة قوائم الطعام الرقمية عبر رمز QR. كل مطعم يمتلك معرفاً خاصاً وقائمة طعام مستقلة تماماً.
+            منصة قوائم الطعام الرقمية عبر رمز QR. كل مطعم يمتلك معرّفاً خاصاً وقائمة طعام مستقلة تماماً.
           </p>
         </div>
 
@@ -78,14 +78,14 @@ export const HomePage: React.FC = () => {
         {/* Direct Lookup Input */}
         <form onSubmit={handleLookup} className="space-y-2">
           <label className="block text-xs font-bold text-neutral-700 text-right">
-            لديك معرف أو كود مطعم؟
+            لديك معرّف المطعم؟
           </label>
           <div className="flex gap-2">
             <input
               type="text"
-              value={restaurantCode}
-              onChange={(e) => setRestaurantCode(e.target.value)}
-              placeholder="مثال: x7Kp9Qm2VtL8"
+              value={restaurantIdInput}
+              onChange={(e) => setRestaurantIdInput(e.target.value)}
+              placeholder="مثال: my-restaurant"
               dir="ltr"
               className="flex-1 px-3 py-2.5 bg-neutral-50 border border-neutral-300 rounded-xl text-xs font-mono text-center focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600"
             />

@@ -43,6 +43,12 @@ service cloud.firestore {
         && data.displayOrder is number;
     }
 
+    function isValidLoginLink(data) {
+      return data.restaurant_id is string && data.restaurant_id.size() > 0 && data.restaurant_id.size() <= 128
+        && data.token_hash is string && data.token_hash.size() > 0 && data.token_hash.size() <= 128
+        && data.is_active is bool;
+    }
+
     // Venues collection
     match /venues/{venueId} {
       allow get: if isValidId(venueId);
@@ -77,6 +83,36 @@ service cloud.firestore {
       allow create: if isValidId(filterTagId) && isValidFilterTag(incoming());
       allow update: if isValidId(filterTagId) && isValidFilterTag(incoming());
       allow delete: if isValidId(filterTagId);
+    }
+
+    // Restaurant Login Links collection
+    match /restaurant_login_links/{linkId} {
+      allow get: if isValidId(linkId);
+      allow list: if true;
+      allow create: if isValidId(linkId) && isValidLoginLink(incoming());
+      allow update: if isValidId(linkId) && isValidLoginLink(incoming());
+      allow delete: if isValidId(linkId);
+    }
+
+    // Slug Registry collection (unique slugs and redirect aliases)
+    match /slug_registry/{slug} {
+      allow get: if isValidId(slug);
+      allow list: if true;
+      allow create, update, delete: if isValidId(slug);
+    }
+
+    // Distributed Rate Limits collection
+    match /rate_limits/{ipHash} {
+      allow get: if isValidId(ipHash);
+      allow list: if false;
+      allow create, update, delete: if isValidId(ipHash);
+    }
+
+    // Restaurant Slug Audit Logs
+    match /restaurant_slug_audit_logs/{logId} {
+      allow get, list: if true;
+      allow create: if isValidId(logId);
+      allow update, delete: if false;
     }
 
     // Test connection endpoint

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { NavLink, Link, Outlet, useParams } from 'react-router-dom';
+import { NavLink, Link, Outlet, useParams, useNavigate } from 'react-router-dom';
 import { useMenu } from '../../context/MenuContext';
 import { useAdminAuth } from '../../context/AdminAuthContext';
 import { ConfirmDialog } from '../common/ConfirmDialog';
@@ -19,12 +19,14 @@ import {
   ArrowLeft,
   AlertCircle,
   Home,
+  ShieldCheck,
 } from 'lucide-react';
 
 export const AdminLayout: React.FC = () => {
   const { restaurantId } = useParams<{ restaurantId?: string }>();
   const { venue, isLoading, loadRestaurant, resetToInitialData } = useMenu();
-  const { isAuthenticated, login, logout } = useAdminAuth();
+  const { role, isAuthorizedFor, loginRestaurant, logout } = useAdminAuth();
+  const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
   const [pinInput, setPinInput] = useState<string>('');
@@ -52,12 +54,24 @@ export const AdminLayout: React.FC = () => {
     }
   };
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPinError('');
-    const success = login(pinInput);
-    if (!success) {
-      setPinError('رمز المرور غير صحيح');
+    if (!venue) return;
+    const result = await loginRestaurant(venue.id, pinInput);
+    if (!result.success) {
+      setPinError(result.error || 'كلمة مرور المطعم غير صحيحة');
+    }
+  };
+
+  const handleLogoutAction = async () => {
+    await logout();
+    if (role === 'super_admin') {
+      navigate('/super-admin');
+    } else if (venue) {
+      navigate(`/menu/${venue.id}`);
+    } else {
+      navigate('/');
     }
   };
 
@@ -93,7 +107,7 @@ export const AdminLayout: React.FC = () => {
                 {restaurantId}
               </code>
             )}
-            . يرجى التأكد من صحة الرابط أو كود المطعم.
+            . يرجى التأكد من صحة الرابط أو معرف المطعم.
           </p>
 
           <Link
@@ -120,8 +134,10 @@ export const AdminLayout: React.FC = () => {
     { path: `${baseAdminPath}/qr`, label: 'رمز QR والطباعة', icon: QrCode },
   ];
 
-  // 3. Admin Lock Screen if not authenticated
-  if (!isAuthenticated) {
+  const isAuthorized = isAuthorizedFor(venue.id);
+
+  // 3. Admin Lock Screen if not authorized
+  if (!isAuthorized) {
     return (
       <div className="min-h-screen bg-neutral-900 flex items-center justify-center p-4 selection:bg-amber-500/20" dir="rtl">
         <div className="max-w-md w-full bg-white rounded-3xl p-8 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95 duration-200">
@@ -132,7 +148,7 @@ export const AdminLayout: React.FC = () => {
             لوحة إدارة {venue.name}
           </h1>
           <p className="text-xs text-neutral-500 text-center mb-6">
-            منطقة المشرف محمية برمز مرور خاص. أدخل الرمز للمتابعة.
+            منطقة إدارة المطعم محمية بكلمة مرور. أدخل كلمة المرور للمتابعة.
           </p>
 
           {pinError && (
@@ -144,13 +160,13 @@ export const AdminLayout: React.FC = () => {
           <form onSubmit={handlePinSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-neutral-700 mb-1.5 text-right">
-                رمز مرور المشرف
+                كلمة مرور المطعم
               </label>
               <input
                 type="password"
                 value={pinInput}
                 onChange={(e) => setPinInput(e.target.value)}
-                placeholder="أدخل رمز المرور..."
+                placeholder="أدخل كلمة المرور..."
                 autoFocus
                 className="w-full text-center tracking-widest text-lg font-mono py-3 px-4 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-600"
               />
@@ -187,6 +203,15 @@ export const AdminLayout: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <span className="text-emerald-400 font-semibold">إدارة: {venue.name}</span>
           <span className="text-neutral-400 text-[11px] font-mono" dir="ltr">({venue.id})</span>
+          {role === 'super_admin' && (
+            <Link
+              to="/super-admin"
+              className="inline-flex items-center gap-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold hover:bg-amber-500/30 transition-colors mr-2"
+            >
+              <ShieldCheck className="w-3 h-3 text-amber-400" />
+              <span>Super Admin</span>
+            </Link>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -200,7 +225,7 @@ export const AdminLayout: React.FC = () => {
           <span className="text-neutral-700">|</span>
           <button
             type="button"
-            onClick={logout}
+            onClick={handleLogoutAction}
             className="inline-flex items-center gap-1 text-neutral-400 hover:text-white transition-colors cursor-pointer text-xs"
           >
             <LogOut className="w-3.5 h-3.5" />

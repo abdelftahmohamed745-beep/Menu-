@@ -12,6 +12,9 @@ import { AdminCategoriesPage } from './pages/AdminCategoriesPage';
 import { AdminProductsPage } from './pages/AdminProductsPage';
 import { AdminFiltersPage } from './pages/AdminFiltersPage';
 import { AdminQrPage } from './pages/AdminQrPage';
+import { SuperAdminPage } from './pages/SuperAdminPage';
+import { MagicLinkErrorPage } from './pages/MagicLinkErrorPage';
+import { MagicLinkHandlerPage } from './pages/MagicLinkHandlerPage';
 
 export default function App() {
   return (
@@ -22,10 +25,17 @@ export default function App() {
             {/* 1. Main Platform Domain - Clean Empty Platform Landing (No Restaurant Selected) */}
             <Route path="/" element={<HomePage />} />
 
-            {/* 2. Customer Facing Menu for Specific Restaurant */}
+            {/* 2. Super Admin Portal (Hidden, noindex, standalone) */}
+            <Route path="/super-admin" element={<SuperAdminPage />} />
+
+            {/* 3. Magic Link Handling Routes */}
+            <Route path="/r/:token" element={<MagicLinkHandlerPage />} />
+            <Route path="/magic-link-error" element={<MagicLinkErrorPage />} />
+
+            {/* 4. Customer Facing Menu for Specific Restaurant */}
             <Route path="/menu/:slug" element={<CustomerMenuPage />} />
 
-            {/* 3. Isolated Admin Control Panel for Specific Restaurant */}
+            {/* 5. Isolated Admin Control Panel for Specific Restaurant */}
             <Route path="/admin/:restaurantId" element={<AdminLayout />}>
               <Route index element={<AdminOverviewPage />} />
               <Route path="venue" element={<AdminVenuePage />} />

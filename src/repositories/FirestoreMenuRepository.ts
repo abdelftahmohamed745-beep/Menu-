@@ -158,20 +158,59 @@ export class FirestoreMenuRepository implements IMenuRepository {
 
   async getVenueBySlug(slug: string): Promise<Venue | null> {
     if (!slug || typeof slug !== 'string') return null;
+    const cleanSlug = slug.trim().toLowerCase();
     const path = 'venues';
     try {
-      // 1. Try direct lookup by document ID (since Restaurant ID is used as unique URL identifier)
-      const docRef = doc(db, 'venues', slug);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        return docSnap.data() as Venue;
+      // 1. Try direct lookup by document ID (immutable internal ID)
+      const directRef = doc(db, 'venues', slug.trim());
+      const directSnap = await getDoc(directRef);
+      if (directSnap.exists()) {
+        return directSnap.data() as Venue;
       }
 
-      // 2. Try query by slug field
-      const q = query(collection(db, 'venues'), where('slug', '==', slug));
+      // 2. Try slug_registry index (fastest O(1) lookup for current slug & alias redirects)
+      const registryRef = doc(db, 'slug_registry', cleanSlug);
+      const registrySnap = await getDoc(registryRef);
+      if (registrySnap.exists()) {
+        const regData = registrySnap.data();
+        // If alias was turned OFF (isActive === false), strictly do not resolve
+        if (regData.isActive === false) {
+          return null;
+        }
+        if (regData.venueId) {
+          const targetVenueDoc = await getDoc(doc(db, 'venues', regData.venueId));
+          if (targetVenueDoc.exists()) {
+            return targetVenueDoc.data() as Venue;
+          }
+        }
+      }
+
+      // 3. Try query by current primary slug field
+      const q = query(collection(db, 'venues'), where('slug', '==', cleanSlug));
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
         return snapshot.docs[0].data() as Venue;
+      }
+
+      // 4. Try scanning previousSlugs array on venues if not yet in slug_registry
+      const allVenuesSnap = await getDocs(collection(db, 'venues'));
+      for (const d of allVenuesSnap.docs) {
+        const v = d.data() as Venue;
+        if (v.slug && v.slug.toLowerCase() === cleanSlug) {
+          return v;
+        }
+        if (Array.isArray(v.previousSlugs)) {
+          const matchingAlias = v.previousSlugs.find(
+            (p) => p.slug.toLowerCase() === cleanSlug
+          );
+          if (matchingAlias) {
+            // Respect active toggle switch
+            if (matchingAlias.isActive) {
+              return v;
+            }
+            return null; // Deactivated alias
+          }
+        }
       }
 
       // Strictly return null - NEVER fallback to any other restaurant

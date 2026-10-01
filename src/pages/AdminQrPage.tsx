@@ -21,7 +21,7 @@ export const AdminQrPage: React.FC = () => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
   const origin = window.location.origin;
-  const menuSlug = venue?.id || venue?.slug || '';
+  const menuSlug = venue?.slug || venue?.id || '';
   const menuUrl = menuSlug ? `${origin}/menu/${menuSlug}` : '';
 
   // Generate QR Code
@@ -101,7 +101,7 @@ export const AdminQrPage: React.FC = () => {
             رمز QR للزبائن وطباعة الستاند
           </h2>
           <p className="text-sm text-neutral-500 mt-1">
-            وجّه الزبائن مباشرة إلى قائمة الطعام عبر مسح الكود بكاميرا هواتفهم دون الحاجة لأي تطبيق أو تسجيل دخول.
+            وجّه الزبائن مباشرة إلى قائمة الطعام عبر مسح رمز الـ QR بكاميرا هواتفهم دون الحاجة لأي تطبيق أو تسجيل دخول.
           </p>
         </div>
 

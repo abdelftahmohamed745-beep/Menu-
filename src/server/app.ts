@@ -3,17 +3,15 @@ import cookieParser from 'cookie-parser';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import {
-  doc,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  collection,
-  query,
-  where,
-  deleteField,
-} from 'firebase/firestore';
-import { serverDb, getDatabaseMode } from './db';
+  serverDb,
+  getDatabaseMode,
+  serverGetDoc,
+  serverSetDoc,
+  serverUpdateDoc,
+  serverDeleteDoc,
+  serverGetDocs,
+  testFirestoreDiagnostics,
+} from './db';
 import {
   checkBruteForceFirestore,
   recordFailedLoginFirestore,
@@ -24,19 +22,27 @@ import {
   toggleAliasStatus,
   getSlugAuditLogs,
 } from './slugManager';
+import {
+  cleanSecretString,
+  normalizeDigits,
+  verifyPasswordHash,
+  verifyRestaurantPassword,
+  updateRestaurantPassword,
+  getOrSeedRestaurantPassword,
+} from './passwordManager';
 
 dotenv.config();
 
 export const COOKIE_NAME = 'app_session_token';
 export const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const RESTAURANT_OLD_PASSWORD = '2002500';
 
 export function getSuperAdminPassword(): string {
-  return (process.env.SUPER_ADMIN_PASSWORD || '').trim();
+  return cleanSecretString(process.env.SUPER_ADMIN_PASSWORD);
 }
 
 export function getSessionSecret(): string {
-  return (process.env.SESSION_SECRET || 'restaurant_menu_super_admin_session_key_2026_xyz').trim();
+  const envVal = cleanSecretString(process.env.SESSION_SECRET);
+  return envVal || 'restaurant_menu_super_admin_session_key_2026_xyz_default_secret_seed';
 }
 
 export interface SessionPayload {
@@ -57,13 +63,15 @@ export function getClientIp(req: Request): string {
 }
 
 // ---------------------------------------------------------------------------
-// Timing-safe password verification
+// Timing-safe Super Admin Password Verification
 // ---------------------------------------------------------------------------
 export function verifySuperAdminPassword(input: string): boolean {
   const secret = getSuperAdminPassword();
   if (!secret) return false;
   if (typeof input !== 'string') return false;
-  const hashA = crypto.createHash('sha256').update(input).digest();
+
+  const normalizedInput = cleanSecretString(input);
+  const hashA = crypto.createHash('sha256').update(normalizedInput).digest();
   const hashB = crypto.createHash('sha256').update(secret).digest();
   return crypto.timingSafeEqual(hashA, hashB);
 }
@@ -107,7 +115,7 @@ export function parseSessionToken(token?: string): SessionPayload | null {
 
 export function setSessionCookie(res: Response, payload: Omit<SessionPayload, 'exp'>): void {
   const token = createSessionToken(payload);
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
     secure: isProduction,
@@ -130,18 +138,37 @@ export function requireSuperAdmin(req: Request, res: Response, next: NextFunctio
 }
 
 // ---------------------------------------------------------------------------
-// Create & Configure Express Application & Router
+// Create & Configure Express Application
 // ---------------------------------------------------------------------------
 export const app = express();
+
+// Full CORS with credentials support (essential for Vercel preview & subdomains)
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-Requested-With');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
 
 app.use(express.json());
 app.use(cookieParser());
 
-// Create an API Router to mount under both /api and / to prevent rewrite issues
+// Create API Router
 const apiRouter = express.Router();
 
 // ---------------------------------------------------------------------------
-// Health Check Endpoint (Diagnostics)
+// Comprehensive Health Check Endpoint (Diagnostics)
 // ---------------------------------------------------------------------------
 apiRouter.get('/health', async (req: Request, res: Response) => {
   const missing: string[] = [];
@@ -152,29 +179,49 @@ apiRouter.get('/health', async (req: Request, res: Response) => {
     missing.push('SESSION_SECRET');
   }
 
-  let firestoreConnected = false;
-  let firestoreError: string | null = null;
+  // Test Firestore Read/Write/Delete
+  const firestoreDiag = await testFirestoreDiagnostics();
+
+  // Audit restaurants stats
+  let countRestaurants = 0;
+  let countWithPassword = 0;
+  let countMissingSlug = 0;
 
   try {
-    // Quick test read against Firestore
-    await getDoc(doc(serverDb, 'venues', 'test_health_connection'));
-    firestoreConnected = true;
-  } catch (err: any) {
-    firestoreError = err?.message || String(err);
+    const venues = await serverGetDocs('venues');
+    countRestaurants = venues.length;
+
+    for (const v of venues) {
+      if (!v.slug) {
+        countMissingSlug++;
+      }
+      // Check if credentials doc or field exists
+      const cred = await serverGetDoc('restaurant_credentials', v.id);
+      if (cred && cred.passwordHash) {
+        countWithPassword++;
+      } else if (v.adminPassword) {
+        countWithPassword++;
+      }
+    }
+  } catch (err) {
+    console.warn('[HealthCheck] Error calculating restaurant stats:', err);
   }
 
-  const dbMode = getDatabaseMode();
+  const rawSecret = cleanSecretString(process.env.SESSION_SECRET);
+  const sessionSecretLengthValid = rawSecret.length >= 32;
 
-  const isOk = missing.length === 0 && firestoreConnected;
+  const isOk = missing.length === 0 && firestoreDiag.connected;
 
   res.status(isOk ? 200 : 503).json({
     ok: isOk,
     status: isOk ? 'healthy' : 'degraded',
     missingVariables: missing,
-    firestore: {
-      connected: firestoreConnected,
-      mode: dbMode.mode,
-      error: firestoreError,
+    sessionSecretLengthValid,
+    firestore: firestoreDiag,
+    stats: {
+      countRestaurants,
+      countWithPassword,
+      countMissingSlug,
     },
     timestamp: new Date().toISOString(),
   });
@@ -202,27 +249,83 @@ apiRouter.post('/auth/logout', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-// Alternative login with restaurant password
-apiRouter.post('/admin/restaurant-login', (req: Request, res: Response) => {
+// ---------------------------------------------------------------------------
+// Restaurant Password Login (Brute-Force Protected, Per-Restaurant Hashed)
+// ---------------------------------------------------------------------------
+apiRouter.post('/admin/restaurant-login', async (req: Request, res: Response) => {
   const { restaurantId, password } = req.body || {};
   if (!restaurantId || typeof password !== 'string') {
-    res.status(400).json({ error: 'يرجى تقديم معرف المطعم وكلمة المرور' });
+    res.status(400).json({ error: 'يرجى إدخال معرف المطعم وكلمة المرور' });
     return;
   }
 
-  if (password.trim() === RESTAURANT_OLD_PASSWORD) {
-    setSessionCookie(res, {
-      role: 'restaurant_owner',
-      restaurantId: String(restaurantId).trim(),
+  const ip = getClientIp(req);
+  const rateCheck = await checkBruteForceFirestore(ip);
+  if (!rateCheck.allowed) {
+    res.status(429).json({
+      error: rateCheck.arabicMessage || 'تم إيقاف المحاولات مؤقتًا، يرجى المحاولة لاحقاً',
+      retryAfter: rateCheck.remainingLockoutSeconds,
+      remainingMinutes: rateCheck.remainingMinutes,
     });
-    res.json({ success: true, role: 'restaurant_owner', restaurantId });
     return;
   }
 
-  res.status(401).json({ error: 'كلمة مرور المطعم غير صحيحة' });
+  const rawLookup = String(restaurantId).trim();
+  const cleanLookup = rawLookup.toLowerCase();
+
+  // 1. Resolve canonical venue ID (supports internal ID, primary slug, or active alias)
+  let canonicalVenueId: string | null = null;
+
+  // Direct ID check (raw case first, then lower)
+  const venueById = (await serverGetDoc('venues', rawLookup)) || (await serverGetDoc('venues', cleanLookup));
+  if (venueById) {
+    canonicalVenueId = venueById.id;
+  } else {
+    // Check slug_registry
+    const regDoc = await serverGetDoc('slug_registry', cleanLookup);
+    if (regDoc && regDoc.isActive !== false && regDoc.venueId) {
+      canonicalVenueId = regDoc.venueId;
+    } else {
+      // Query venues by slug
+      const venuesBySlug = await serverGetDocs('venues', { field: 'slug', op: '==', value: cleanLookup });
+      if (venuesBySlug.length > 0) {
+        canonicalVenueId = venuesBySlug[0].id;
+      }
+    }
+  }
+
+  if (!canonicalVenueId) {
+    await recordFailedLoginFirestore(ip);
+    res.status(404).json({ error: 'المطعم غير موجود، يرجى التأكد من المعرّف أو الرابط' });
+    return;
+  }
+
+  // 2. Verify password against hashed credentials
+  const verifyResult = await verifyRestaurantPassword(canonicalVenueId, password);
+
+  if (!verifyResult.success) {
+    await recordFailedLoginFirestore(ip);
+    res.status(401).json({ error: 'كلمة المرور غير صحيحة' });
+    return;
+  }
+
+  // 3. Login success: reset rate limit and issue scoped session cookie
+  await resetFailedLoginFirestore(ip);
+  setSessionCookie(res, {
+    role: 'restaurant_owner',
+    restaurantId: canonicalVenueId,
+  });
+
+  res.json({
+    success: true,
+    role: 'restaurant_owner',
+    restaurantId: canonicalVenueId,
+  });
 });
 
-// Client-side magic link consumption route (reliable across serverless & SPA)
+// ---------------------------------------------------------------------------
+// Magic Link Handling
+// ---------------------------------------------------------------------------
 apiRouter.post('/auth/consume-magic-link', async (req: Request, res: Response) => {
   const { token } = req.body || {};
   if (!token || typeof token !== 'string') {
@@ -232,27 +335,25 @@ apiRouter.post('/auth/consume-magic-link', async (req: Request, res: Response) =
 
   try {
     const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
-    const linksQuery = query(
-      collection(serverDb, 'restaurant_login_links'),
-      where('token_hash', '==', tokenHash)
-    );
-    const snapshot = await getDocs(linksQuery);
+    const links = await serverGetDocs('restaurant_login_links', {
+      field: 'token_hash',
+      op: '==',
+      value: tokenHash,
+    });
 
-    if (snapshot.empty) {
+    if (links.length === 0) {
       res.status(404).json({ error: 'الرابط غير صالح أو تم إلغاؤه' });
       return;
     }
 
-    const linkDoc = snapshot.docs[0];
-    const linkData = linkDoc.data();
-
+    const linkData = links[0];
     if (!linkData.is_active) {
       res.status(403).json({ error: 'تم تعطيل هذا الرابط بواسطة الإدارة' });
       return;
     }
 
     // Update last_used_at
-    await updateDoc(doc(serverDb, 'restaurant_login_links', linkDoc.id), {
+    await serverUpdateDoc('restaurant_login_links', linkData.id, {
       last_used_at: new Date().toISOString(),
     });
 
@@ -300,7 +401,7 @@ apiRouter.post('/super-admin/login', async (req: Request, res: Response) => {
 
   if (missing.length > 0) {
     res.status(500).json({
-      error: `إعداد الخادم ناقص: ${missing.join(', ')}`,
+      error: `إعداد الخادم ناقص: ناقص متغيرات (${missing.join(', ')})`,
       missingVariables: missing,
     });
     return;
@@ -311,8 +412,9 @@ apiRouter.post('/super-admin/login', async (req: Request, res: Response) => {
 
   if (!rateCheck.allowed) {
     res.status(429).json({
-      error: 'بيانات الاعتماد غير صالحة',
+      error: rateCheck.arabicMessage || 'تم إيقاف المحاولات مؤقتًا لتكرار المحاولات غير الصحيحة',
       retryAfter: rateCheck.remainingLockoutSeconds,
+      remainingMinutes: rateCheck.remainingMinutes,
     });
     return;
   }
@@ -320,7 +422,7 @@ apiRouter.post('/super-admin/login', async (req: Request, res: Response) => {
   const { password } = req.body || {};
   if (!password || !verifySuperAdminPassword(password)) {
     await recordFailedLoginFirestore(ip);
-    res.status(401).json({ error: 'بيانات الاعتماد غير صالحة' });
+    res.status(401).json({ error: 'كلمة مرور الإدارة العامة غير صحيحة' });
     return;
   }
 
@@ -338,40 +440,39 @@ apiRouter.get('/super-admin/me', requireSuperAdmin, (req: Request, res: Response
   res.json({ isAuthenticated: true, role: 'super_admin' });
 });
 
-// List all restaurants with magic link status and public ID aliases
+// List all restaurants with password status & magic link status
 apiRouter.get('/super-admin/restaurants', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const venuesSnapshot = await getDocs(collection(serverDb, 'venues'));
-    const linksSnapshot = await getDocs(collection(serverDb, 'restaurant_login_links'));
+    const venues = await serverGetDocs('venues');
+    const links = await serverGetDocs('restaurant_login_links');
 
     const linksByVenueId = new Map<string, any>();
-    linksSnapshot.forEach((docSnap) => {
-      const data = docSnap.data();
-      if (data.restaurant_id) {
-        linksByVenueId.set(data.restaurant_id, {
-          id: docSnap.id,
-          ...data,
-        });
+    links.forEach((l) => {
+      if (l.restaurant_id) {
+        linksByVenueId.set(l.restaurant_id, l);
       }
     });
 
-    const restaurants = venuesSnapshot.docs.map((docSnap) => {
-      const venue = docSnap.data();
-      const link = linksByVenueId.get(docSnap.id);
+    const restaurants = await Promise.all(
+      venues.map(async (venue) => {
+        const link = linksByVenueId.get(venue.id);
+        const cred = await serverGetDoc('restaurant_credentials', venue.id);
 
-      return {
-        id: docSnap.id, // Internal immutable ID
-        name: venue.name || 'بدون اسم',
-        slug: venue.slug || docSnap.id, // Current Public ID
-        previousSlugs: venue.previousSlugs || [],
-        currency: venue.currency || 'SAR',
-        createdAt: venue.createdAt || null,
-        hasLink: Boolean(link),
-        isLinkActive: Boolean(link?.is_active),
-        linkCreatedAt: link?.created_at || null,
-        lastUsedAt: link?.last_used_at || null,
-      };
-    });
+        return {
+          id: venue.id, // Internal immutable ID
+          name: venue.name || 'بدون اسم',
+          slug: venue.slug || venue.id, // Current Public ID
+          previousSlugs: venue.previousSlugs || [],
+          currency: venue.currency || 'SAR',
+          createdAt: venue.createdAt || null,
+          hasLink: Boolean(link),
+          isLinkActive: Boolean(link?.is_active),
+          linkCreatedAt: link?.created_at || null,
+          lastUsedAt: link?.last_used_at || null,
+          hasCustomPassword: Boolean(cred?.isCustom || venue.adminPassword),
+        };
+      })
+    );
 
     restaurants.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
@@ -382,127 +483,154 @@ apiRouter.get('/super-admin/restaurants', requireSuperAdmin, async (req: Request
   }
 });
 
-// Generate / Get magic link
-apiRouter.post('/super-admin/restaurants/:restaurantId/link', requireSuperAdmin, async (req: Request, res: Response) => {
-  const { restaurantId } = req.params;
-  if (!restaurantId) {
-    res.status(400).json({ error: 'معرف المطعم مطلوب' });
-    return;
-  }
+// Super Admin Action: Set/Reset Restaurant Password
+apiRouter.post(
+  '/super-admin/restaurants/:restaurantId/password',
+  requireSuperAdmin,
+  async (req: Request, res: Response) => {
+    const { restaurantId } = req.params;
+    const { newPassword } = req.body || {};
 
-  try {
-    const linkDocRef = doc(serverDb, 'restaurant_login_links', `link_${restaurantId}`);
-    const existingDoc = await getDoc(linkDocRef);
-
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const now = new Date().toISOString();
-
-    await setDoc(linkDocRef, {
-      id: `link_${restaurantId}`,
-      restaurant_id: restaurantId,
-      token_hash: tokenHash,
-      is_active: true,
-      created_at: now,
-      last_used_at: existingDoc.exists() ? existingDoc.data().last_used_at || null : null,
-    });
-
-    const host = req.get('host') || 'localhost:3000';
-    const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
-    const fullUrl = `${protocol}://${host}/r/${rawToken}`;
-
-    res.json({
-      success: true,
-      token: rawToken,
-      fullUrl,
-      is_active: true,
-      created_at: now,
-    });
-  } catch (err: any) {
-    console.error('Error generating link:', err);
-    res.status(500).json({ error: 'تعذر إنشاء الرابط السحري' });
-  }
-});
-
-// Regenerate magic link
-apiRouter.post('/super-admin/restaurants/:restaurantId/regenerate-link', requireSuperAdmin, async (req: Request, res: Response) => {
-  const { restaurantId } = req.params;
-  if (!restaurantId) {
-    res.status(400).json({ error: 'معرف المطعم مطلوب' });
-    return;
-  }
-
-  try {
-    const linkDocRef = doc(serverDb, 'restaurant_login_links', `link_${restaurantId}`);
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const now = new Date().toISOString();
-
-    await setDoc(linkDocRef, {
-      id: `link_${restaurantId}`,
-      restaurant_id: restaurantId,
-      token_hash: tokenHash,
-      is_active: true,
-      created_at: now,
-      last_used_at: null,
-    });
-
-    const host = req.get('host') || 'localhost:3000';
-    const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
-    const fullUrl = `${protocol}://${host}/r/${rawToken}`;
-
-    res.json({
-      success: true,
-      token: rawToken,
-      fullUrl,
-      is_active: true,
-      created_at: now,
-    });
-  } catch (err: any) {
-    console.error('Error regenerating link:', err);
-    res.status(500).json({ error: 'تعذر إعادة توليد الرابط' });
-  }
-});
-
-// Toggle active status of magic link
-apiRouter.patch('/super-admin/restaurants/:restaurantId/link/toggle', requireSuperAdmin, async (req: Request, res: Response) => {
-  const { restaurantId } = req.params;
-  if (!restaurantId) {
-    res.status(400).json({ error: 'معرف المطعم مطلوب' });
-    return;
-  }
-
-  try {
-    const linkDocRef = doc(serverDb, 'restaurant_login_links', `link_${restaurantId}`);
-    const snapshot = await getDoc(linkDocRef);
-
-    if (!snapshot.exists()) {
-      res.status(404).json({ error: 'لا يوجد رابط مسجل لهذا المطعم' });
+    if (!restaurantId || !newPassword) {
+      res.status(400).json({ error: 'يرجى تقديم معرّف المطعم وكلمة المرور الجديدة' });
       return;
     }
 
-    const currentStatus = Boolean(snapshot.data().is_active);
-    const newStatus = !currentStatus;
-
-    await updateDoc(linkDocRef, {
-      is_active: newStatus,
-    });
-
-    res.json({ success: true, is_active: newStatus });
-  } catch (err: any) {
-    console.error('Error toggling link:', err);
-    res.status(500).json({ error: 'تعذر تعديل حالة الرابط' });
+    try {
+      await updateRestaurantPassword(restaurantId, newPassword);
+      res.json({ success: true, message: 'تم تحديث كلمة مرور المطعم بنجاح' });
+    } catch (err: any) {
+      console.error('Error updating restaurant password:', err);
+      res.status(400).json({ error: err?.message || 'فشل تحديث كلمة مرور المطعم' });
+    }
   }
-});
+);
 
-// ---------------------------------------------------------------------------
-// Changeable Restaurant Public ID (Slug) Endpoints
-// ---------------------------------------------------------------------------
+// Generate / Get magic link
+apiRouter.post(
+  '/super-admin/restaurants/:restaurantId/link',
+  requireSuperAdmin,
+  async (req: Request, res: Response) => {
+    const { restaurantId } = req.params;
+    if (!restaurantId) {
+      res.status(400).json({ error: 'معرف المطعم مطلوب' });
+      return;
+    }
+
+    try {
+      const existingDoc = await serverGetDoc('restaurant_login_links', `link_${restaurantId}`);
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const now = new Date().toISOString();
+
+      await serverSetDoc('restaurant_login_links', `link_${restaurantId}`, {
+        id: `link_${restaurantId}`,
+        restaurant_id: restaurantId,
+        token_hash: tokenHash,
+        is_active: true,
+        created_at: now,
+        last_used_at: existingDoc ? existingDoc.last_used_at || null : null,
+      });
+
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const fullUrl = `${protocol}://${host}/r/${rawToken}`;
+
+      res.json({
+        success: true,
+        token: rawToken,
+        fullUrl,
+        is_active: true,
+        created_at: now,
+      });
+    } catch (err: any) {
+      console.error('Error generating link:', err);
+      res.status(500).json({ error: 'تعذر إنشاء الرابط السحري' });
+    }
+  }
+);
+
+// Regenerate magic link
+apiRouter.post(
+  '/super-admin/restaurants/:restaurantId/regenerate-link',
+  requireSuperAdmin,
+  async (req: Request, res: Response) => {
+    const { restaurantId } = req.params;
+    if (!restaurantId) {
+      res.status(400).json({ error: 'معرف المطعم مطلوب' });
+      return;
+    }
+
+    try {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const now = new Date().toISOString();
+
+      await serverSetDoc('restaurant_login_links', `link_${restaurantId}`, {
+        id: `link_${restaurantId}`,
+        restaurant_id: restaurantId,
+        token_hash: tokenHash,
+        is_active: true,
+        created_at: now,
+        last_used_at: null,
+      });
+
+      const host = req.get('host') || 'localhost:3000';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const fullUrl = `${protocol}://${host}/r/${rawToken}`;
+
+      res.json({
+        success: true,
+        token: rawToken,
+        fullUrl,
+        is_active: true,
+        created_at: now,
+      });
+    } catch (err: any) {
+      console.error('Error regenerating link:', err);
+      res.status(500).json({ error: 'تعذر إعادة توليد الرابط' });
+    }
+  }
+);
+
+// Toggle active status of magic link
+apiRouter.patch(
+  '/super-admin/restaurants/:restaurantId/link/toggle',
+  requireSuperAdmin,
+  async (req: Request, res: Response) => {
+    const { restaurantId } = req.params;
+    if (!restaurantId) {
+      res.status(400).json({ error: 'معرف المطعم مطلوب' });
+      return;
+    }
+
+    try {
+      const snapshot = await serverGetDoc('restaurant_login_links', `link_${restaurantId}`);
+      if (!snapshot) {
+        res.status(404).json({ error: 'لا يوجد رابط مسجل لهذا المطعم' });
+        return;
+      }
+
+      const currentStatus = Boolean(snapshot.is_active);
+      const newStatus = !currentStatus;
+
+      await serverUpdateDoc('restaurant_login_links', `link_${restaurantId}`, {
+        is_active: newStatus,
+      });
+
+      res.json({ success: true, is_active: newStatus });
+    } catch (err: any) {
+      console.error('Error toggling link:', err);
+      res.status(500).json({ error: 'تعذر تعديل حالة الرابط' });
+    }
+  }
+);
+
+// Changeable Restaurant Public ID (Slug)
 apiRouter.post('/venues/:venueId/change-slug', async (req: Request, res: Response) => {
   const { venueId } = req.params;
   const { newSlug } = req.body || {};
 
-  // Check authorization: Super Admin OR Restaurant Owner of this venueId
   const token = req.cookies?.[COOKIE_NAME];
   const session = parseSessionToken(token);
 
@@ -574,57 +702,7 @@ apiRouter.get('/super-admin/slug-audit-logs', requireSuperAdmin, async (req: Req
   }
 });
 
-// DB Migration Endpoint: Remove Access Codes & Seed Slugs
-apiRouter.post('/migrations/remove-access-codes', requireSuperAdmin, async (req: Request, res: Response) => {
-  try {
-    const venuesRef = collection(serverDb, 'venues');
-    const snapshot = await getDocs(venuesRef);
-    let cleaned = 0;
-
-    for (const docSnap of snapshot.docs) {
-      const data = docSnap.data();
-      const fieldsToDelete: Record<string, any> = {};
-      if ('accessCode' in data) fieldsToDelete.accessCode = deleteField();
-      if ('access_code' in data) fieldsToDelete.access_code = deleteField();
-      if ('adminCode' in data) fieldsToDelete.adminCode = deleteField();
-      if ('code' in data && typeof data.code === 'string' && data.code.length <= 12) {
-        fieldsToDelete.code = deleteField();
-      }
-
-      // Ensure slug is registered in slug_registry
-      const slugVal = (data.slug || docSnap.id).toLowerCase();
-      const regDocRef = doc(serverDb, 'slug_registry', slugVal);
-      await setDoc(
-        regDocRef,
-        {
-          slug: slugVal,
-          venueId: docSnap.id,
-          type: 'primary',
-          isActive: true,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-
-      if (Object.keys(fieldsToDelete).length > 0) {
-        await updateDoc(doc(serverDb, 'venues', docSnap.id), fieldsToDelete);
-        cleaned++;
-      }
-    }
-
-    res.json({
-      success: true,
-      scannedVenues: snapshot.size,
-      cleanedVenues: cleaned,
-      message: 'تم تنظيف كافة حقول الأكواد القديمة وتأمين معرّفات المطاعم بنجاح',
-    });
-  } catch (err: any) {
-    console.error('Migration error:', err);
-    res.status(500).json({ error: 'حدث خطأ أثناء تنفيذ الترحيل' });
-  }
-});
-
-// Magic link redirect handler
+// Magic link direct redirect handler
 const magicLinkHandler = async (req: Request, res: Response) => {
   const { token } = req.params;
   if (!token || typeof token !== 'string') {
@@ -634,27 +712,25 @@ const magicLinkHandler = async (req: Request, res: Response) => {
 
   try {
     const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
-    const linksQuery = query(
-      collection(serverDb, 'restaurant_login_links'),
-      where('token_hash', '==', tokenHash)
-    );
-    const snapshot = await getDocs(linksQuery);
+    const links = await serverGetDocs('restaurant_login_links', {
+      field: 'token_hash',
+      op: '==',
+      value: tokenHash,
+    });
 
-    if (snapshot.empty) {
+    if (links.length === 0) {
       res.redirect('/magic-link-error');
       return;
     }
 
-    const linkDoc = snapshot.docs[0];
-    const linkData = linkDoc.data();
-
+    const linkData = links[0];
     if (!linkData.is_active) {
       res.redirect('/magic-link-error');
       return;
     }
 
     // Update last_used_at
-    await updateDoc(doc(serverDb, 'restaurant_login_links', linkDoc.id), {
+    await serverUpdateDoc('restaurant_login_links', linkData.id, {
       last_used_at: new Date().toISOString(),
     });
 
@@ -666,7 +742,7 @@ const magicLinkHandler = async (req: Request, res: Response) => {
 
     res.redirect(`/admin/${linkData.restaurant_id}`);
   } catch (err) {
-    console.error('Error handling magic link:', err);
+    console.error('Error handling magic link redirect:', err);
     res.redirect('/magic-link-error');
   }
 };

@@ -25,6 +25,8 @@ import {
   CheckCircle2,
   XCircle,
   Sliders,
+  Activity,
+  KeyRound,
 } from 'lucide-react';
 import { VenueSlugAlias } from '../types';
 
@@ -39,6 +41,28 @@ interface SuperAdminRestaurant {
   isLinkActive: boolean;
   linkCreatedAt: string | null;
   lastUsedAt: string | null;
+  hasCustomPassword?: boolean;
+}
+
+interface HealthDiagnostics {
+  ok: boolean;
+  status: string;
+  missingVariables: string[];
+  sessionSecretLengthValid: boolean;
+  firestore: {
+    connected: boolean;
+    read: boolean;
+    write: boolean;
+    delete: boolean;
+    mode: 'firebase-admin' | 'firebase-web';
+    error?: string | null;
+  };
+  stats: {
+    countRestaurants: number;
+    countWithPassword: number;
+    countMissingSlug: number;
+  };
+  timestamp: string;
 }
 
 interface SlugAuditLog {
@@ -94,6 +118,18 @@ export const SuperAdminPage: React.FC = () => {
   // Migration status
   const [migrationStatus, setMigrationStatus] = useState<string | null>(null);
   const [isMigrating, setIsMigrating] = useState<boolean>(false);
+
+  // System Health Check State
+  const [isHealthModalOpen, setIsHealthModalOpen] = useState<boolean>(false);
+  const [healthData, setHealthData] = useState<HealthDiagnostics | null>(null);
+  const [isCheckingHealth, setIsCheckingHealth] = useState<boolean>(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  // Change Restaurant Password State
+  const [changePasswordTarget, setChangePasswordTarget] = useState<SuperAdminRestaurant | null>(null);
+  const [newPasswordInput, setNewPasswordInput] = useState<string>('');
+  const [isChangingPassword, setIsChangingPassword] = useState<boolean>(false);
+  const [changePasswordError, setChangePasswordError] = useState<string | null>(null);
 
   // Add noindex meta tag dynamically
   useEffect(() => {
@@ -495,6 +531,63 @@ export const SuperAdminPage: React.FC = () => {
     }
   };
 
+  // Run System Health Check
+  const handleRunHealthCheck = async () => {
+    try {
+      setIsCheckingHealth(true);
+      setIsHealthModalOpen(true);
+      setHealthError(null);
+      const res = await fetch('/api/health');
+      const data = await res.json();
+      setHealthData(data);
+    } catch (err: any) {
+      setHealthError(err?.message || 'تعذر استدعاء دالة /api/health');
+    } finally {
+      setIsCheckingHealth(false);
+    }
+  };
+
+  // Change Restaurant Password
+  const handleOpenChangePassword = (v: SuperAdminRestaurant) => {
+    setChangePasswordTarget(v);
+    setNewPasswordInput('');
+    setChangePasswordError(null);
+  };
+
+  const handleSavePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!changePasswordTarget) return;
+    const cleanPass = newPasswordInput.trim();
+    if (!cleanPass || cleanPass.length < 4) {
+      setChangePasswordError('كلمة المرور يجب ألا تقل عن 4 خانات');
+      return;
+    }
+
+    try {
+      setIsChangingPassword(true);
+      setChangePasswordError(null);
+      const res = await fetch(`/api/super-admin/restaurants/${changePasswordTarget.id}/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ newPassword: cleanPass }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast(`تم تعيين كلمة مرور جديدة لمطعم «${changePasswordTarget.name}» بنجاح`);
+        setChangePasswordTarget(null);
+        await fetchRestaurants();
+      } else {
+        setChangePasswordError(data.error || 'فشل تحديث كلمة المرور');
+      }
+    } catch (err) {
+      setChangePasswordError('حدث خطأ في الاتصال بالخادم');
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
   // Execute DB Migration for removing legacy access codes & registering slugs
   const handleRunMigration = async () => {
     try {
@@ -693,6 +786,18 @@ export const SuperAdminPage: React.FC = () => {
             >
               <Database className={`w-3.5 h-3.5 text-amber-400 ${isMigrating ? 'animate-spin' : ''}`} />
               <span>{isMigrating ? 'جاري التطهير...' : 'تطهير قاعدة البيانات'}</span>
+            </button>
+
+            {/* System Health Check Button */}
+            <button
+              type="button"
+              onClick={handleRunHealthCheck}
+              disabled={isCheckingHealth}
+              className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-emerald-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer border border-emerald-500/30 flex items-center gap-1.5"
+              title="فحص شامل لسلامة دوال الخادم وقاعدة البيانات والمتغيرات"
+            >
+              <Activity className={`w-3.5 h-3.5 text-emerald-400 ${isCheckingHealth ? 'animate-spin' : ''}`} />
+              <span>{isCheckingHealth ? 'جاري الفحص...' : 'فحص النظام'}</span>
             </button>
 
             {/* View Audit Logs Button */}
@@ -914,6 +1019,17 @@ export const SuperAdminPage: React.FC = () => {
                             >
                               <ExternalLink className="w-3 h-3 text-amber-400" />
                               <span>دخول مباشر</span>
+                            </button>
+
+                            {/* Set / Reset Restaurant Password */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenChangePassword(v)}
+                              className="px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-sky-300 border border-neutral-700 rounded-lg text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+                              title="تغيير باسورد المطعم"
+                            >
+                              <KeyRound className="w-3 h-3 text-sky-400" />
+                              <span>تغيير الباسورد</span>
                             </button>
 
                             {/* 2. Generate / Copy Login Link */}
@@ -1208,6 +1324,302 @@ export const SuperAdminPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Change Restaurant Password */}
+      {changePasswordTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setChangePasswordTarget(null)}
+        >
+          <div
+            className="max-w-md w-full bg-neutral-900 border border-neutral-800 rounded-3xl p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-sky-400" />
+                <span>تغيير باسورد «{changePasswordTarget.name}»</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setChangePasswordTarget(null)}
+                className="text-neutral-500 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              عيّن كلمة مرور خاصة لإدارة هذا المطعم. يتم تشفير كلمة المرور فوراً ولا يمكن قراءتها بصيغتها الأصلية.
+            </p>
+
+            {changePasswordError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{changePasswordError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSavePassword} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-neutral-300 mb-1.5">
+                  كلمة المرور الجديدة للمطعم *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={newPasswordInput}
+                  onChange={(e) => setNewPasswordInput(e.target.value)}
+                  placeholder="مثال: 2002500 أو كلمة مرور قوية"
+                  className="w-full px-3.5 py-2.5 bg-neutral-800 border border-neutral-700 rounded-xl text-white text-xs outline-none focus:border-sky-500 font-mono text-center tracking-wider"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setChangePasswordTarget(null)}
+                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={isChangingPassword}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-xl text-xs cursor-pointer flex items-center gap-1.5"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>{isChangingPassword ? 'جاري الحفظ...' : 'حفظ كلمة المرور'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Comprehensive System Health Check Diagnostics */}
+      {isHealthModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setIsHealthModalOpen(false)}
+        >
+          <div
+            className="max-w-2xl w-full bg-neutral-900 border border-neutral-800 rounded-3xl p-6 shadow-2xl space-y-5 max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3 flex-shrink-0">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Activity className="w-5 h-5 text-emerald-400" />
+                <span>فحص النظام والتشخيص الذاتي (System Health)</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setIsHealthModalOpen(false)}
+                className="text-neutral-500 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="overflow-y-auto flex-1 space-y-4 pr-1">
+              {isCheckingHealth ? (
+                <div className="py-12 text-center text-neutral-400 space-y-2">
+                  <RefreshCw className="w-8 h-8 animate-spin mx-auto text-emerald-400" />
+                  <p className="text-sm">جاري فحص دوال الخادم وقاعدة البيانات والمتغيرات...</p>
+                </div>
+              ) : healthError ? (
+                <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-2xl space-y-2">
+                  <p className="font-bold flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-rose-400" />
+                    <span>فشل الاتصال بنقطة الفحص:</span>
+                  </p>
+                  <p className="font-mono text-[11px]">{healthError}</p>
+                </div>
+              ) : healthData ? (
+                <div className="space-y-4 text-xs">
+                  {/* Overall Banner */}
+                  <div
+                    className={`p-4 rounded-2xl border flex items-center justify-between ${
+                      healthData.ok
+                        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+                        : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 font-bold text-sm">
+                      {healthData.ok ? (
+                        <>
+                          <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                          <span>جميع الفحوصات سليمة والنظام يعمل 100%</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertCircle className="w-5 h-5 text-rose-400" />
+                          <span>يوجد متطلبات تحتاج إلى إعداد في Vercel</span>
+                        </>
+                      )}
+                    </div>
+                    <span className="font-mono text-[11px] opacity-80" dir="ltr">
+                      {healthData.firestore.mode}
+                    </span>
+                  </div>
+
+                  {/* Checklist */}
+                  <div className="space-y-2.5">
+                    {/* 1. SUPER_ADMIN_PASSWORD */}
+                    <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 font-bold text-white">
+                          <span>متغير كلمة مرور المدير العام (SUPER_ADMIN_PASSWORD)</span>
+                        </div>
+                        {healthData.missingVariables.includes('SUPER_ADMIN_PASSWORD') ? (
+                          <p className="text-[11px] text-rose-400">
+                            ❌ المتغير ناقص: أضفه في إعدادات البيئة (Environment Variables) في Vercel ثم اضغط Redeploy.
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-emerald-400">
+                            ✅ مضبوط في البيئة ويعمل بنجاح.
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-lg">
+                        {healthData.missingVariables.includes('SUPER_ADMIN_PASSWORD') ? '❌' : '✅'}
+                      </span>
+                    </div>
+
+                    {/* 2. SESSION_SECRET */}
+                    <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 font-bold text-white">
+                          <span>مفتاح تشفير الجلسات (SESSION_SECRET)</span>
+                        </div>
+                        {healthData.missingVariables.includes('SESSION_SECRET') ? (
+                          <p className="text-[11px] text-rose-400">
+                            ❌ المتغير ناقص: أضف قيمة عشوائية قوية من 64 خانة في Vercel باسم SESSION_SECRET.
+                          </p>
+                        ) : !healthData.sessionSecretLengthValid ? (
+                          <p className="text-[11px] text-amber-400">
+                            ⚠️ المفتاح موجود لكن قصير: يفضل أن يكون طوله 32 خانة على الأقل لضمان التشفير.
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-emerald-400">
+                            ✅ مضبوط وطوله صالح للتشفير الآمن (HMAC-SHA256).
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-lg">
+                        {healthData.missingVariables.includes('SESSION_SECRET')
+                          ? '❌'
+                          : healthData.sessionSecretLengthValid
+                          ? '✅'
+                          : '⚠️'}
+                      </span>
+                    </div>
+
+                    {/* 3. Firestore Read/Write/Delete */}
+                    <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 font-bold text-white">
+                          <span>الاتصال بقاعدة بيانات Firestore (قراءة + كتابة + حذف)</span>
+                        </div>
+                        <div className="flex items-center gap-4 text-[11px] text-neutral-300 pt-1">
+                          <span>قراءة: {healthData.firestore.read ? '✅' : '❌'}</span>
+                          <span>كتابة: {healthData.firestore.write ? '✅' : '❌'}</span>
+                          <span>حذف: {healthData.firestore.delete ? '✅' : '❌'}</span>
+                        </div>
+                        {healthData.firestore.error && (
+                          <p className="text-[11px] text-rose-400 font-mono mt-1" dir="ltr">
+                            خطأ: {healthData.firestore.error}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-lg">
+                        {healthData.firestore.connected ? '✅' : '❌'}
+                      </span>
+                    </div>
+
+                    {/* 4. Firebase Admin SDK Mode */}
+                    <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 font-bold text-white">
+                          <span>وضع تشغيل قاعدة البيانات في الخادم (Database Mode)</span>
+                        </div>
+                        <p className="text-[11px] text-neutral-400">
+                          {healthData.firestore.mode === 'firebase-admin' ? (
+                            <span className="text-emerald-400 font-semibold">
+                              ✅ مفعل باستخدام Firebase Admin SDK (يتجاوز قواعد الأمان بامتيازات Service Account).
+                            </span>
+                          ) : (
+                            <span className="text-neutral-300">
+                              ℹ️ يعمل حالياً عبر Firebase Web SDK مع قواعد Firestore Rules. لإضافة Admin SDK، أضف مفاتيح FIREBASE_PRIVATE_KEY و FIREBASE_CLIENT_EMAIL في Vercel.
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <span className="text-lg">
+                        {healthData.firestore.mode === 'firebase-admin' ? '🛡️' : '🌐'}
+                      </span>
+                    </div>
+
+                    {/* 5. Statistics */}
+                    <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl space-y-2">
+                      <div className="font-bold text-white">إحصائيات المطاعم في النظام</div>
+                      <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+                        <div className="p-2 bg-neutral-900 rounded-lg">
+                          <span className="text-neutral-400 block">إجمالي المطاعم</span>
+                          <span className="text-sm font-bold text-white">{healthData.stats.countRestaurants}</span>
+                        </div>
+                        <div className="p-2 bg-neutral-900 rounded-lg">
+                          <span className="text-neutral-400 block">مطاعم بكلمة مرور</span>
+                          <span className="text-sm font-bold text-emerald-400">{healthData.stats.countWithPassword}</span>
+                        </div>
+                        <div className="p-2 bg-neutral-900 rounded-lg">
+                          <span className="text-neutral-400 block">ناقص معرّف</span>
+                          <span className="text-sm font-bold text-amber-400">{healthData.stats.countMissingSlug}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between border-t border-neutral-800 pt-3 flex-shrink-0">
+              <a
+                href="/api/health"
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-neutral-400 hover:text-amber-400 font-mono underline"
+              >
+                عرض JSON الخام (/api/health)
+              </a>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRunHealthCheck}
+                  disabled={isCheckingHealth}
+                  className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isCheckingHealth ? 'animate-spin' : ''}`} />
+                  <span>إعادة الفحص الآن</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsHealthModalOpen(false)}
+                  className="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 text-neutral-950 font-bold rounded-xl text-xs cursor-pointer"
+                >
+                  إغلاق
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

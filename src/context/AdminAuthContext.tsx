@@ -8,14 +8,19 @@ interface AdminAuthContextValue {
   restaurantId: string | null;
   isLoading: boolean;
   isAuthorizedFor: (venueId: string) => boolean;
-  loginRestaurant: (venueId: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  loginRestaurant: (venueId: string, password: string) => Promise<{ success: boolean; error?: string; remainingMinutes?: number }>;
   login: (password: string, venueId?: string) => Promise<boolean>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<void>;
 }
 
 const ADMIN_STORAGE_KEY = 'app_admin_session_auth';
-const SECRET_ADMIN_PASS = '2002500';
+
+// Arabic digit normalizer
+function normalizeArabicDigits(str: string): string {
+  const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+  return str.replace(/[٠-٩]/g, (d) => String(arabicDigits.indexOf(d)));
+}
 
 const AdminAuthContext = createContext<AdminAuthContextValue | undefined>(undefined);
 
@@ -29,7 +34,7 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const refreshSession = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/session', {
-        headers: { credentials: 'include' },
+        credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();
@@ -45,22 +50,10 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       console.warn('Failed to verify server session:', err);
     }
 
-    // Fallback: check local storage if offline or running in mock
-    try {
-      const stored = sessionStorage.getItem(ADMIN_STORAGE_KEY) || localStorage.getItem(ADMIN_STORAGE_KEY);
-      if (stored === 'true') {
-        setIsAuthenticated(true);
-        setRole('restaurant_owner');
-      } else {
-        setIsAuthenticated(false);
-        setRole(null);
-        setRestaurantId(null);
-      }
-    } catch {
-      setIsAuthenticated(false);
-    } finally {
-      setIsLoading(false);
-    }
+    setIsAuthenticated(false);
+    setRole(null);
+    setRestaurantId(null);
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -71,11 +64,11 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const isAuthorizedFor = useCallback(
     (venueId: string): boolean => {
       if (!isAuthenticated || !role) return false;
-      // Super admin is authorized for EVERY restaurant directly without password or code
+      // Super admin is authorized for EVERY restaurant directly without password
       if (role === 'super_admin') return true;
-      // Restaurant owner is authorized if matching restaurantId or legacy session
+      // Restaurant owner is authorized if matching restaurantId
       if (role === 'restaurant_owner') {
-        if (!restaurantId) return true; // Generic owner
+        if (!restaurantId) return true;
         return restaurantId === venueId;
       }
       return false;
@@ -87,17 +80,23 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const loginRestaurant = async (
     venueId: string,
     password: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; error?: string; remainingMinutes?: number }> => {
     try {
+      const cleanPassword = normalizeArabicDigits(password.trim());
       const res = await fetch('/api/admin/restaurant-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ restaurantId: venueId, password }),
+        body: JSON.stringify({ restaurantId: venueId, password: cleanPassword }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      const contentType = res.headers.get('content-type') || '';
+      let data: any = {};
+      if (contentType.includes('application/json')) {
+        data = await res.json().catch(() => ({}));
+      }
+
+      if (res.ok && data.success) {
         setIsAuthenticated(true);
         setRole(data.role || 'restaurant_owner');
         setRestaurantId(data.restaurantId || venueId);
@@ -109,17 +108,37 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return { success: true };
       }
 
-      const errData = await res.json().catch(() => ({}));
-      return { success: false, error: errData.error || 'كلمة مرور المطعم غير صحيحة' };
-    } catch (err) {
-      // Offline fallback
-      if (password.trim() === SECRET_ADMIN_PASS) {
-        setIsAuthenticated(true);
-        setRole('restaurant_owner');
-        setRestaurantId(venueId);
-        return { success: true };
+      if (res.status === 429) {
+        return {
+          success: false,
+          error: data.error || 'تم إيقاف المحاولات مؤقتًا لتكرار المحاولات غير الصحيحة',
+          remainingMinutes: data.remainingMinutes || 15,
+        };
       }
-      return { success: false, error: 'حدث خطأ في الاتصال بالخادم' };
+
+      if (res.status === 404) {
+        return {
+          success: false,
+          error: data.error || 'لم يتم العثور على هذا المطعم',
+        };
+      }
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: data.error || 'كلمة المرور غير صحيحة',
+        };
+      }
+
+      return {
+        success: false,
+        error: data.error || `خطأ ${res.status}: تعذر تسجيل الدخول للمطعم`,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `تعذر الاتصال بالخادم (${err?.message || 'Network Error'}) - تحقق من اتصالك بالإنترنت`,
+      };
     }
   };
 
@@ -128,18 +147,6 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (venueId) {
       const result = await loginRestaurant(venueId, password);
       return result.success;
-    }
-
-    if (password.trim() === SECRET_ADMIN_PASS) {
-      try {
-        sessionStorage.setItem(ADMIN_STORAGE_KEY, 'true');
-        localStorage.setItem(ADMIN_STORAGE_KEY, 'true');
-      } catch {
-        // Ignore
-      }
-      setIsAuthenticated(true);
-      setRole('restaurant_owner');
-      return true;
     }
     return false;
   };

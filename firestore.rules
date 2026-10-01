@@ -115,9 +115,21 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Test connection endpoint
+    // Restaurant Credentials (Hashed passwords)
+    match /restaurant_credentials/{venueId} {
+      allow get: if isValidId(venueId);
+      allow list: if false;
+      allow create, update, delete: if isValidId(venueId);
+    }
+
+    // System Health Diagnostics test collection
+    match /system_health/{testId} {
+      allow read, write, delete: if isValidId(testId);
+    }
+
+    // Test connection endpoint (legacy compatibility)
     match /test/{testId} {
-      allow read: if isValidId(testId);
+      allow read, write, delete: if isValidId(testId);
     }
   }
 }

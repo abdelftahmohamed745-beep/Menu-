@@ -158,14 +158,34 @@ export class FirestoreMenuRepository implements IMenuRepository {
 
   async getVenueBySlug(slug: string): Promise<Venue | null> {
     if (!slug || typeof slug !== 'string') return null;
-    const cleanSlug = slug.trim().toLowerCase();
+    const rawTrimmed = slug.trim();
+    const cleanSlug = rawTrimmed.toLowerCase();
     const path = 'venues';
     try {
       // 1. Try direct lookup by document ID (immutable internal ID)
-      const directRef = doc(db, 'venues', slug.trim());
+      const directRef = doc(db, 'venues', rawTrimmed);
       const directSnap = await getDoc(directRef);
       if (directSnap.exists()) {
-        return directSnap.data() as Venue;
+        const vData = directSnap.data();
+        return {
+          ...vData,
+          id: directSnap.id,
+          slug: vData.slug || directSnap.id,
+        } as Venue;
+      }
+
+      // If raw != clean, also try lowercased direct doc ID
+      if (cleanSlug !== rawTrimmed) {
+        const lowerDirectRef = doc(db, 'venues', cleanSlug);
+        const lowerDirectSnap = await getDoc(lowerDirectRef);
+        if (lowerDirectSnap.exists()) {
+          const vData = lowerDirectSnap.data();
+          return {
+            ...vData,
+            id: lowerDirectSnap.id,
+            slug: vData.slug || lowerDirectSnap.id,
+          } as Venue;
+        }
       }
 
       // 2. Try slug_registry index (fastest O(1) lookup for current slug & alias redirects)
@@ -180,7 +200,12 @@ export class FirestoreMenuRepository implements IMenuRepository {
         if (regData.venueId) {
           const targetVenueDoc = await getDoc(doc(db, 'venues', regData.venueId));
           if (targetVenueDoc.exists()) {
-            return targetVenueDoc.data() as Venue;
+            const tData = targetVenueDoc.data();
+            return {
+              ...tData,
+              id: targetVenueDoc.id,
+              slug: tData.slug || targetVenueDoc.id,
+            } as Venue;
           }
         }
       }
@@ -189,19 +214,31 @@ export class FirestoreMenuRepository implements IMenuRepository {
       const q = query(collection(db, 'venues'), where('slug', '==', cleanSlug));
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
-        return snapshot.docs[0].data() as Venue;
+        const sDoc = snapshot.docs[0];
+        const sData = sDoc.data();
+        return {
+          ...sData,
+          id: sDoc.id,
+          slug: sData.slug || sDoc.id,
+        } as Venue;
       }
 
       // 4. Try scanning previousSlugs array on venues if not yet in slug_registry
       const allVenuesSnap = await getDocs(collection(db, 'venues'));
       for (const d of allVenuesSnap.docs) {
-        const v = d.data() as Venue;
-        if (v.slug && v.slug.toLowerCase() === cleanSlug) {
+        const vData = d.data();
+        const v: Venue = {
+          ...vData,
+          id: d.id,
+          slug: vData.slug || d.id,
+        } as Venue;
+
+        if (v.slug && (v.slug.toLowerCase() === cleanSlug || v.slug === rawTrimmed)) {
           return v;
         }
         if (Array.isArray(v.previousSlugs)) {
           const matchingAlias = v.previousSlugs.find(
-            (p) => p.slug.toLowerCase() === cleanSlug
+            (p) => p.slug.toLowerCase() === cleanSlug || p.slug === rawTrimmed
           );
           if (matchingAlias) {
             // Respect active toggle switch

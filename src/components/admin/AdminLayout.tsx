@@ -31,6 +31,7 @@ export const AdminLayout: React.FC = () => {
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<string>('');
+  const [isSubmittingPin, setIsSubmittingPin] = useState<boolean>(false);
   const [hasAttemptedLoad, setHasAttemptedLoad] = useState<boolean>(false);
 
   // Load the specific restaurant based strictly on route param
@@ -58,9 +59,18 @@ export const AdminLayout: React.FC = () => {
     e.preventDefault();
     setPinError('');
     if (!venue) return;
-    const result = await loginRestaurant(venue.id, pinInput);
-    if (!result.success) {
-      setPinError(result.error || 'كلمة مرور المطعم غير صحيحة');
+    if (!pinInput.trim()) {
+      setPinError('يرجى إدخال كلمة مرور المطعم');
+      return;
+    }
+    try {
+      setIsSubmittingPin(true);
+      const result = await loginRestaurant(venue.id, pinInput);
+      if (!result.success) {
+        setPinError(result.error || 'كلمة مرور المطعم غير صحيحة');
+      }
+    } finally {
+      setIsSubmittingPin(false);
     }
   };
 
@@ -174,9 +184,10 @@ export const AdminLayout: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-3 bg-neutral-900 hover:bg-neutral-800 text-white rounded-xl font-bold text-sm transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
+              disabled={isSubmittingPin}
+              className="w-full py-3 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white rounded-xl font-bold text-sm transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
             >
-              <span>تأكيد الدخول</span>
+              <span>{isSubmittingPin ? 'جاري التحقق...' : 'تأكيد الدخول'}</span>
               <ArrowLeft className="w-4 h-4" />
             </button>
           </form>

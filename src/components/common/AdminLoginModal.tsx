@@ -20,7 +20,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const { login } = useAdminAuth();
+  const { login, loginRestaurant } = useAdminAuth();
   const navigate = useNavigate();
 
   if (!isOpen) return null;
@@ -35,15 +35,27 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     }
 
     setIsSubmitting(true);
-    const success = await login(password, venueId);
 
-    if (success) {
-      setPassword('');
-      onClose();
-      navigate(redirectPath);
+    if (venueId) {
+      const result = await loginRestaurant(venueId, password);
+      if (result.success) {
+        setPassword('');
+        onClose();
+        navigate(redirectPath);
+      } else {
+        setError(result.error || 'كلمة المرور غير صحيحة');
+        setIsSubmitting(false);
+      }
     } else {
-      setError('كلمة المرور غير صحيحة');
-      setIsSubmitting(false);
+      const success = await login(password);
+      if (success) {
+        setPassword('');
+        onClose();
+        navigate(redirectPath);
+      } else {
+        setError('كلمة المرور غير صحيحة');
+        setIsSubmitting(false);
+      }
     }
   };
 

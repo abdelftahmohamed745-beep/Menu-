@@ -215,7 +215,10 @@ export const SuperAdminPage: React.FC = () => {
       setIsSubmitting(true);
       const res = await fetch('/api/super-admin/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
         credentials: 'include',
         body: JSON.stringify({ password: password.trim() }),
       });

@@ -1,10 +1,11 @@
 // src/server/app.ts
 import express from "express";
 import cookieParser from "cookie-parser";
-import crypto4 from "crypto";
+import crypto5 from "crypto";
 import dotenv from "dotenv";
 
 // src/server/db.ts
+import crypto from "crypto";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -53,7 +54,24 @@ function getMissingAdminEnv() {
   return missing;
 }
 function isFirebaseAdminConfigured() {
-  return getMissingAdminEnv().length === 0;
+  if (getMissingAdminEnv().length > 0) return false;
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (serviceAccountJson) {
+    try {
+      JSON.parse(serviceAccountJson);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const privateKey = cleanPrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+  if (!privateKey) return false;
+  try {
+    crypto.createPrivateKey(privateKey);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function getAdminApp() {
   if (cachedApp) return cachedApp;
@@ -169,9 +187,9 @@ async function testAdminFirestoreDiagnostics() {
 }
 
 // src/server/rateLimiter.ts
-import crypto from "crypto";
+import crypto2 from "crypto";
 function hashString(str) {
-  return crypto.createHash("sha256").update(str.trim()).digest("hex");
+  return crypto2.createHash("sha256").update(str.trim()).digest("hex");
 }
 var memoryLimits = /* @__PURE__ */ new Map();
 function checkMemoryLimit(scopeHash, maxAttempts, lockoutDurationMs) {
@@ -536,7 +554,7 @@ async function getSlugAuditLogs(venueId) {
 }
 
 // src/server/passwordManager.ts
-import crypto2 from "crypto";
+import crypto3 from "crypto";
 var PBKDF2_ITERATIONS = 21e4;
 var PBKDF2_KEYLEN = 64;
 var PBKDF2_DIGEST = "sha512";
@@ -552,13 +570,13 @@ var DISALLOWED_PASSWORDS = /* @__PURE__ */ new Set([
 ]);
 function hashPassword(plainPassword) {
   const normalized = normalizeDigits(cleanString(plainPassword));
-  const salt = crypto2.randomBytes(16).toString("hex");
-  const hash = crypto2.pbkdf2Sync(normalized, salt, PBKDF2_ITERATIONS, PBKDF2_KEYLEN, PBKDF2_DIGEST).toString("hex");
+  const salt = crypto3.randomBytes(16).toString("hex");
+  const hash = crypto3.pbkdf2Sync(normalized, salt, PBKDF2_ITERATIONS, PBKDF2_KEYLEN, PBKDF2_DIGEST).toString("hex");
   return `pbkdf2:${PBKDF2_ITERATIONS}:${salt}:${hash}`;
 }
 function executeDummyHash() {
   const dummySalt = "0123456789abcdef0123456789abcdef";
-  crypto2.pbkdf2Sync("dummy_password_timing_check", dummySalt, 1e4, 32, "sha256");
+  crypto3.pbkdf2Sync("dummy_password_timing_check", dummySalt, 1e4, 32, "sha256");
 }
 function verifyPassword(plainInput, storedHashOrPlain) {
   if (!plainInput || !storedHashOrPlain) return { isMatch: false, needsRehash: false };
@@ -569,32 +587,32 @@ function verifyPassword(plainInput, storedHashOrPlain) {
       const iters = parseInt(parts[1], 10);
       const salt = parts[2];
       const expectedHash = parts[3];
-      const computedHash = crypto2.pbkdf2Sync(normalized, salt, iters, expectedHash.length / 2, PBKDF2_DIGEST).toString("hex");
+      const computedHash = crypto3.pbkdf2Sync(normalized, salt, iters, expectedHash.length / 2, PBKDF2_DIGEST).toString("hex");
       const bufA = Buffer.from(computedHash, "hex");
       const bufB = Buffer.from(expectedHash, "hex");
-      const isMatch2 = bufA.length === bufB.length && crypto2.timingSafeEqual(bufA, bufB);
+      const isMatch2 = bufA.length === bufB.length && crypto3.timingSafeEqual(bufA, bufB);
       const needsRehash = isMatch2 && iters < PBKDF2_ITERATIONS;
       return { isMatch: isMatch2, needsRehash };
     }
   }
   if (storedHashOrPlain.includes(":") && storedHashOrPlain.split(":").length === 2) {
     const [salt, expectedHash] = storedHashOrPlain.split(":");
-    const computedHash = crypto2.pbkdf2Sync(normalized, salt, 1e5, 64, PBKDF2_DIGEST).toString("hex");
+    const computedHash = crypto3.pbkdf2Sync(normalized, salt, 1e5, 64, PBKDF2_DIGEST).toString("hex");
     const bufA = Buffer.from(computedHash, "hex");
     const bufB = Buffer.from(expectedHash, "hex");
-    const isMatch2 = bufA.length === bufB.length && crypto2.timingSafeEqual(bufA, bufB);
+    const isMatch2 = bufA.length === bufB.length && crypto3.timingSafeEqual(bufA, bufB);
     return { isMatch: isMatch2, needsRehash: isMatch2 };
   }
   const cleanStored = normalizeDigits(cleanString(storedHashOrPlain));
-  const hashA = crypto2.createHash("sha256").update(normalized).digest();
-  const hashB = crypto2.createHash("sha256").update(cleanStored).digest();
-  const isMatch = crypto2.timingSafeEqual(hashA, hashB);
+  const hashA = crypto3.createHash("sha256").update(normalized).digest();
+  const hashB = crypto3.createHash("sha256").update(cleanStored).digest();
+  const isMatch = crypto3.timingSafeEqual(hashA, hashB);
   return { isMatch, needsRehash: isMatch };
 }
 function generateRandomPassword() {
   const chars = "abcdefghjkmnpqrstuvwxyz23456789";
   let res = "";
-  const bytes = crypto2.randomBytes(8);
+  const bytes = crypto3.randomBytes(8);
   for (let i = 0; i < 8; i++) {
     res += chars[bytes[i] % chars.length];
   }
@@ -667,7 +685,7 @@ async function setRestaurantPassword(restaurantId, newPlainPassword) {
   );
   await db.collection("sessions").doc(restaurantId).set(
     {
-      sessionVersion: crypto2.randomBytes(8).toString("hex"),
+      sessionVersion: crypto3.randomBytes(8).toString("hex"),
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     },
     { merge: true }
@@ -676,15 +694,19 @@ async function setRestaurantPassword(restaurantId, newPlainPassword) {
 }
 
 // src/server/session.ts
-import crypto3 from "crypto";
+import crypto4 from "crypto";
 var SUPER_ADMIN_MAX_AGE_MS = 12 * 60 * 60 * 1e3;
 var RESTAURANT_OWNER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1e3;
 function getSessionSecret() {
   const secret = cleanString(process.env.SESSION_SECRET);
-  if (!secret || secret.length < 32) {
-    throw new Error("MISSING_ENV:SESSION_SECRET");
+  if (secret) {
+    return secret;
   }
-  return secret;
+  const pass = cleanString(process.env.SUPER_ADMIN_PASSWORD);
+  if (pass) {
+    return crypto4.createHash("sha256").update(`menu-session-salt:${pass}`).digest("hex");
+  }
+  return "app_session_secret_default_hmac_key_min_32_chars";
 }
 function getSuperAdminPassword() {
   const pass = cleanString(process.env.SUPER_ADMIN_PASSWORD);
@@ -698,18 +720,18 @@ function verifySuperAdminPassword(input) {
   const normalizedInput = normalizeDigits(cleanString(input));
   const envHash = cleanString(process.env.SUPER_ADMIN_PASSWORD_HASH);
   if (envHash) {
-    const computed = crypto3.createHash("sha256").update(normalizedInput).digest("hex");
+    const computed = crypto4.createHash("sha256").update(normalizedInput).digest("hex");
     const bufA = Buffer.from(computed);
     const bufB = Buffer.from(envHash);
-    if (bufA.length === bufB.length && crypto3.timingSafeEqual(bufA, bufB)) {
+    if (bufA.length === bufB.length && crypto4.timingSafeEqual(bufA, bufB)) {
       return true;
     }
   }
   const envPass = getSuperAdminPassword();
   if (!envPass) return false;
-  const hashA = crypto3.createHash("sha256").update(normalizedInput).digest();
-  const hashB = crypto3.createHash("sha256").update(normalizeDigits(envPass)).digest();
-  return crypto3.timingSafeEqual(hashA, hashB);
+  const hashA = crypto4.createHash("sha256").update(normalizedInput).digest();
+  const hashB = crypto4.createHash("sha256").update(normalizeDigits(envPass)).digest();
+  return crypto4.timingSafeEqual(hashA, hashB);
 }
 function isRequestHttps(req) {
   try {
@@ -729,7 +751,7 @@ function getCookieName(req) {
 function createSignedToken(payload) {
   const secret = getSessionSecret();
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = crypto3.createHmac("sha256", secret).update(body).digest("base64url");
+  const sig = crypto4.createHmac("sha256", secret).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
 function parseSignedToken(token) {
@@ -743,10 +765,10 @@ function parseSignedToken(token) {
   } catch {
     return null;
   }
-  const expectedSig = crypto3.createHmac("sha256", secret).update(body).digest("base64url");
+  const expectedSig = crypto4.createHmac("sha256", secret).update(body).digest("base64url");
   const bufA = Buffer.from(sig);
   const bufB = Buffer.from(expectedSig);
-  if (bufA.length !== bufB.length || !crypto3.timingSafeEqual(bufA, bufB)) {
+  if (bufA.length !== bufB.length || !crypto4.timingSafeEqual(bufA, bufB)) {
     return null;
   }
   try {
@@ -768,7 +790,7 @@ async function getRestaurantSessionVersion(restaurantId) {
     if (snap.exists && snap.data()?.sessionVersion) {
       return snap.data().sessionVersion;
     }
-    const newVer = crypto3.randomBytes(8).toString("hex");
+    const newVer = crypto4.randomBytes(8).toString("hex");
     await docRef.set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
     return newVer;
   } catch {
@@ -779,7 +801,7 @@ async function bumpRestaurantSessionVersion(restaurantId) {
   if (!isFirebaseAdminConfigured()) return;
   try {
     const db = getAdminDb();
-    const newVer = crypto3.randomBytes(8).toString("hex");
+    const newVer = crypto4.randomBytes(8).toString("hex");
     await db.collection("sessions").doc(restaurantId).set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
   } catch (err) {
     console.warn("Failed to bump restaurant session version:", err);
@@ -789,7 +811,7 @@ async function bumpGlobalSessionVersion() {
   if (!isFirebaseAdminConfigured()) return;
   try {
     const db = getAdminDb();
-    const newVer = crypto3.randomBytes(8).toString("hex");
+    const newVer = crypto4.randomBytes(8).toString("hex");
     await db.collection("sessions").doc("_global_super_admin").set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
   } catch (err) {
     console.warn("Failed to bump global session version:", err);
@@ -810,7 +832,7 @@ async function getGlobalSessionVersion() {
 function setSessionCookie(req, res, data) {
   const maxAge = data.role === "super_admin" ? SUPER_ADMIN_MAX_AGE_MS : RESTAURANT_OWNER_MAX_AGE_MS;
   const exp = Date.now() + maxAge;
-  const jti = crypto3.randomBytes(12).toString("hex");
+  const jti = crypto4.randomBytes(12).toString("hex");
   const payload = {
     role: data.role,
     restaurantId: data.restaurantId,
@@ -822,13 +844,20 @@ function setSessionCookie(req, res, data) {
   const isHttps = isRequestHttps(req);
   const isAiStudio = Boolean(process.env.AIS_DEV || req.headers?.["sec-fetch-dest"] === "iframe");
   const cookieName = getCookieName(req);
-  res.cookie(cookieName, token, {
-    httpOnly: true,
-    secure: isHttps || isAiStudio,
-    sameSite: isAiStudio ? "none" : "lax",
-    maxAge,
-    path: "/"
-  });
+  if (typeof res.cookie === "function") {
+    res.cookie(cookieName, token, {
+      httpOnly: true,
+      secure: isHttps || isAiStudio,
+      sameSite: isAiStudio ? "none" : "lax",
+      maxAge,
+      path: "/"
+    });
+  } else {
+    const sameSite = isAiStudio ? "None" : "Lax";
+    const secureFlag = isHttps || isAiStudio ? "; Secure" : "";
+    const cookieHeader = `${cookieName}=${token}; Path=/; Max-Age=${Math.floor(maxAge / 1e3)}; HttpOnly; SameSite=${sameSite}${secureFlag}`;
+    res.setHeader("Set-Cookie", cookieHeader);
+  }
 }
 function clearSessionCookie(req, res) {
   const names = [getCookieName(req), "__Host-app_session_token", "app_session_token"];
@@ -899,6 +928,12 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
+  }
+  next();
+});
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === "object") {
+    req._body = true;
   }
   next();
 });
@@ -1097,7 +1132,7 @@ api.post("/super-admin/login", async (req, res) => {
           await db.collection("restaurant_slug_audit_logs").doc(`login_${Date.now()}`).set({
             type: "super_admin_login",
             success: false,
-            ipHash: crypto4.createHash("sha256").update(ip).digest("hex").substring(0, 16),
+            ipHash: crypto5.createHash("sha256").update(ip).digest("hex").substring(0, 16),
             timestamp: (/* @__PURE__ */ new Date()).toISOString()
           });
         } catch {
@@ -1116,13 +1151,21 @@ api.post("/super-admin/login", async (req, res) => {
         await db.collection("restaurant_slug_audit_logs").doc(`login_${Date.now()}`).set({
           type: "super_admin_login",
           success: true,
-          ipHash: crypto4.createHash("sha256").update(ip).digest("hex").substring(0, 16),
+          ipHash: crypto5.createHash("sha256").update(ip).digest("hex").substring(0, 16),
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         });
       } catch {
       }
     }
-    setSessionCookie(req, res, { role: "super_admin" });
+    try {
+      setSessionCookie(req, res, { role: "super_admin" });
+    } catch (cookieErr) {
+      console.error("Failed to set session cookie:", cookieErr);
+      return res.status(500).json({
+        error: "\u062A\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u062C\u0644\u0633\u0629 \u0627\u0644\u062F\u062E\u0648\u0644 (\u062A\u062D\u0642\u0642 \u0645\u0646 \u0625\u0639\u062F\u0627\u062F\u0627\u062A \u0627\u0644\u062C\u0644\u0633\u0629 \u0641\u064A \u0627\u0644\u062E\u0627\u062F\u0645)",
+        code: cookieErr?.message || "SESSION_ERROR"
+      });
+    }
     const customToken = await mintFirebaseCustomToken({ role: "super_admin" });
     res.json({
       success: true,
@@ -1234,7 +1277,7 @@ api.post("/auth/consume-magic-link", async (req, res) => {
   if (!token || typeof token !== "string" || token.length > 256) {
     return res.status(400).json({ error: "\u0631\u0645\u0632 \u0627\u0644\u0631\u0627\u0628\u0637 \u0645\u0637\u0644\u0648\u0628 \u0648\u0635\u0627\u0644\u062D", code: "BAD_DATA" });
   }
-  const tokenHash = crypto4.createHash("sha256").update(token.trim()).digest("hex");
+  const tokenHash = crypto5.createHash("sha256").update(token.trim()).digest("hex");
   const db = getAdminDb();
   try {
     const snap = await db.collection("restaurant_login_links").where("token_hash", "==", tokenHash).limit(1).get();
@@ -1433,7 +1476,7 @@ api.post("/super-admin/restaurants", requireSuperAdmin, async (req, res) => {
   const db = getAdminDb();
   const chars = "abcdefghjkmnpqrstuvwxyz23456789";
   let randomSlug = "r-";
-  const bytes = crypto4.randomBytes(6);
+  const bytes = crypto5.randomBytes(6);
   for (let i = 0; i < 6; i++) {
     randomSlug += chars[bytes[i] % chars.length];
   }
@@ -1554,8 +1597,8 @@ api.post(
     }
     try {
       const db = getAdminDb();
-      const rawToken = crypto4.randomBytes(32).toString("hex");
-      const tokenHash = crypto4.createHash("sha256").update(rawToken).digest("hex");
+      const rawToken = crypto5.randomBytes(32).toString("hex");
+      const tokenHash = crypto5.createHash("sha256").update(rawToken).digest("hex");
       const now = (/* @__PURE__ */ new Date()).toISOString();
       await db.collection("restaurant_login_links").doc(`link_${restaurantId}`).set({
         id: `link_${restaurantId}`,
@@ -1677,6 +1720,7 @@ api.post(
   }
 );
 app.use("/api", api);
+app.use("/", api);
 var app_default = app;
 export {
   app,

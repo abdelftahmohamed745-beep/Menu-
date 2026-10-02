@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { initializeApp, getApps, cert, App } from 'firebase-admin/app';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { getAuth, Auth } from 'firebase-admin/auth';
@@ -27,7 +28,24 @@ export function getMissingAdminEnv(): string[] {
 }
 
 export function isFirebaseAdminConfigured(): boolean {
-  return getMissingAdminEnv().length === 0;
+  if (getMissingAdminEnv().length > 0) return false;
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (serviceAccountJson) {
+    try {
+      JSON.parse(serviceAccountJson);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const privateKey = cleanPrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+  if (!privateKey) return false;
+  try {
+    crypto.createPrivateKey(privateKey);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getAdminApp(): App {

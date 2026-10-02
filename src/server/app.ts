@@ -112,6 +112,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// If body was already parsed by Vercel Serverless Function helper, mark req._body = true
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.body && typeof req.body === 'object') {
+    (req as any)._body = true;
+  }
+  next();
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 
@@ -383,7 +391,15 @@ api.post('/super-admin/login', async (req: Request, res: Response) => {
       } catch {}
     }
 
-    setSessionCookie(req, res, { role: 'super_admin' });
+    try {
+      setSessionCookie(req, res, { role: 'super_admin' });
+    } catch (cookieErr: any) {
+      console.error('Failed to set session cookie:', cookieErr);
+      return res.status(500).json({
+        error: 'تعذر إنشاء جلسة الدخول (تحقق من إعدادات الجلسة في الخادم)',
+        code: cookieErr?.message || 'SESSION_ERROR',
+      });
+    }
     const customToken = await mintFirebaseCustomToken({ role: 'super_admin' });
 
     res.json({
@@ -1072,8 +1088,9 @@ api.post(
   }
 );
 
-// Mount router ONLY under /api
+// Mount router under /api and also at root / so all rewrite variations match seamlessly
 app.use('/api', api);
+app.use('/', api);
 
 export {
   isFirebaseAdminConfigured,

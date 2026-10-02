@@ -7,129 +7,141 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Helper functions
+    // Auth Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && request.auth.token.role == 'super_admin';
+    }
+
+    function isOwnerOf(venueId) {
+      return isAuthenticated() && request.auth.token.role == 'restaurant_owner' && request.auth.token.venueId == venueId;
+    }
+
     function incoming() {
       return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
     }
 
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128;
     }
 
-    function isValidVenue(data) {
+    // Validation Functions
+    function isValidVenueUpdate(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() <= 150
-        && data.slug is string && data.slug.size() > 0 && data.slug.size() <= 100
-        && data.currency is string && data.currency.size() > 0 && data.currency.size() <= 10;
+        && data.currency is string && data.currency.size() > 0 && data.currency.size() <= 10
+        // Forbid client writes to sensitive fields; those are handled exclusively via server APIs
+        && (!('slug' in data) || data.slug == existing().slug)
+        && (!('previousSlugs' in data) || data.previousSlugs == existing().previousSlugs)
+        && !('adminPassword' in data)
+        && !('accessCode' in data)
+        && !('access_code' in data);
     }
 
-    function isValidCategory(data) {
+    function isValidCategory(data, vId) {
       return data.name is string && data.name.size() > 0 && data.name.size() <= 100
-        && data.venueId is string && data.venueId.size() > 0 && data.venueId.size() <= 128
+        && data.venueId == vId
         && data.displayOrder is number;
     }
 
-    function isValidProduct(data) {
+    function isValidProduct(data, vId) {
       return data.name is string && data.name.size() > 0 && data.name.size() <= 150
-        && data.venueId is string && data.venueId.size() > 0 && data.venueId.size() <= 128
+        && data.venueId == vId
         && data.categoryId is string && data.categoryId.size() > 0 && data.categoryId.size() <= 128
         && data.price is number && data.price >= 0
         && data.isVisible is bool
         && data.displayOrder is number;
     }
 
-    function isValidFilterTag(data) {
+    function isValidFilterTag(data, vId) {
       return data.name is string && data.name.size() > 0 && data.name.size() <= 50
-        && data.venueId is string && data.venueId.size() > 0 && data.venueId.size() <= 128
+        && data.venueId == vId
         && data.displayOrder is number;
     }
 
-    function isValidLoginLink(data) {
-      return data.restaurant_id is string && data.restaurant_id.size() > 0 && data.restaurant_id.size() <= 128
-        && data.token_hash is string && data.token_hash.size() > 0 && data.token_hash.size() <= 128
-        && data.is_active is bool;
-    }
-
-    // Venues collection
+    // 1. Venues collection
+    // Public read for customer menu; write only by Super Admin or authenticated Owner of this venue
     match /venues/{venueId} {
-      allow get: if isValidId(venueId);
-      allow list: if true;
-      allow create: if isValidId(venueId) && isValidVenue(incoming());
-      allow update: if isValidId(venueId) && isValidVenue(incoming());
-      allow delete: if isValidId(venueId);
+      allow get, list: if isValidId(venueId);
+      allow create: if isSuperAdmin();
+      allow update: if (isSuperAdmin() || isOwnerOf(venueId)) && isValidVenueUpdate(incoming());
+      allow delete: if isSuperAdmin();
     }
 
-    // Categories collection
+    // 2. Categories collection
     match /categories/{categoryId} {
-      allow get: if isValidId(categoryId);
-      allow list: if true;
-      allow create: if isValidId(categoryId) && isValidCategory(incoming());
-      allow update: if isValidId(categoryId) && isValidCategory(incoming());
-      allow delete: if isValidId(categoryId);
-    }
-
-    // Products collection
-    match /products/{productId} {
-      allow get: if isValidId(productId);
-      allow list: if true;
-      allow create: if isValidId(productId) && isValidProduct(incoming());
-      allow update: if isValidId(productId) && isValidProduct(incoming());
-      allow delete: if isValidId(productId);
-    }
-
-    // Filter Tags collection
-    match /filterTags/{filterTagId} {
-      allow get: if isValidId(filterTagId);
-      allow list: if true;
-      allow create: if isValidId(filterTagId) && isValidFilterTag(incoming());
-      allow update: if isValidId(filterTagId) && isValidFilterTag(incoming());
-      allow delete: if isValidId(filterTagId);
-    }
-
-    // Restaurant Login Links collection
-    match /restaurant_login_links/{linkId} {
-      allow get: if isValidId(linkId);
-      allow list: if true;
-      allow create: if isValidId(linkId) && isValidLoginLink(incoming());
-      allow update: if isValidId(linkId) && isValidLoginLink(incoming());
-      allow delete: if isValidId(linkId);
-    }
-
-    // Slug Registry collection (unique slugs and redirect aliases)
-    match /slug_registry/{slug} {
-      allow get: if isValidId(slug);
-      allow list: if true;
-      allow create, update, delete: if isValidId(slug);
-    }
-
-    // Distributed Rate Limits collection
-    match /rate_limits/{ipHash} {
-      allow get: if isValidId(ipHash);
-      allow list: if false;
-      allow create, update, delete: if isValidId(ipHash);
-    }
-
-    // Restaurant Slug Audit Logs
-    match /restaurant_slug_audit_logs/{logId} {
       allow get, list: if true;
-      allow create: if isValidId(logId);
-      allow update, delete: if false;
+      allow create: if isValidId(categoryId)
+        && (isSuperAdmin() || isOwnerOf(incoming().venueId))
+        && isValidCategory(incoming(), incoming().venueId);
+      allow update: if (isSuperAdmin() || isOwnerOf(existing().venueId))
+        && incoming().venueId == existing().venueId
+        && isValidCategory(incoming(), existing().venueId);
+      allow delete: if isSuperAdmin() || isOwnerOf(existing().venueId);
     }
 
-    // Restaurant Credentials (Hashed passwords)
-    match /restaurant_credentials/{venueId} {
-      allow get: if isValidId(venueId);
-      allow list: if false;
-      allow create, update, delete: if isValidId(venueId);
+    // 3. Products collection
+    match /products/{productId} {
+      allow get, list: if true;
+      allow create: if isValidId(productId)
+        && (isSuperAdmin() || isOwnerOf(incoming().venueId))
+        && isValidProduct(incoming(), incoming().venueId);
+      allow update: if (isSuperAdmin() || isOwnerOf(existing().venueId))
+        && incoming().venueId == existing().venueId
+        && isValidProduct(incoming(), existing().venueId);
+      allow delete: if isSuperAdmin() || isOwnerOf(existing().venueId);
     }
 
-    // System Health Diagnostics test collection
-    match /system_health/{testId} {
-      allow read, write, delete: if isValidId(testId);
+    // 4. Filter Tags collection
+    match /filterTags/{filterTagId} {
+      allow get, list: if true;
+      allow create: if isValidId(filterTagId)
+        && (isSuperAdmin() || isOwnerOf(incoming().venueId))
+        && isValidFilterTag(incoming(), incoming().venueId);
+      allow update: if (isSuperAdmin() || isOwnerOf(existing().venueId))
+        && incoming().venueId == existing().venueId
+        && isValidFilterTag(incoming(), existing().venueId);
+      allow delete: if isSuperAdmin() || isOwnerOf(existing().venueId);
     }
 
-    // Test connection endpoint (legacy compatibility)
-    match /test/{testId} {
-      allow read, write, delete: if isValidId(testId);
+    // 5. SERVER-ONLY COLLECTIONS (Client access completely blocked)
+    // Only touched via Firebase Admin SDK with Service Account privileges
+    match /restaurant_credentials/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /restaurant_login_links/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /rate_limits/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /slug_registry/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /restaurant_slug_audit_logs/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /system_health/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /sessions/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /test/{document=**} {
+      allow read, write: if false;
     }
   }
 }

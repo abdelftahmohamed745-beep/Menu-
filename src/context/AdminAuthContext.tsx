@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { signInWithCustomToken, signOut } from 'firebase/auth';
+import { auth } from '../lib/firebase';
 
 export type UserRole = 'super_admin' | 'restaurant_owner' | null;
 
@@ -8,15 +10,18 @@ interface AdminAuthContextValue {
   restaurantId: string | null;
   isLoading: boolean;
   isAuthorizedFor: (venueId: string) => boolean;
-  loginRestaurant: (venueId: string, password: string) => Promise<{ success: boolean; error?: string; remainingMinutes?: number }>;
-  login: (password: string, venueId?: string) => Promise<boolean>;
+  loginRestaurant: (
+    venueId: string,
+    password: string
+  ) => Promise<{ success: boolean; error?: string; code?: string; remainingSeconds?: number; mustChangePassword?: boolean }>;
+  loginSuperAdmin: (
+    password: string
+  ) => Promise<{ success: boolean; error?: string; code?: string; remainingSeconds?: number }>;
+  login: (password: string, targetVenueId?: string) => Promise<boolean>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<void>;
 }
 
-const ADMIN_STORAGE_KEY = 'app_admin_session_auth';
-
-// Arabic digit normalizer
 function normalizeArabicDigits(str: string): string {
   const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
   return str.replace(/[٠-٩]/g, (d) => String(arabicDigits.indexOf(d)));
@@ -34,6 +39,7 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const refreshSession = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/session', {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
       if (res.ok) {
@@ -42,6 +48,14 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setIsAuthenticated(true);
           setRole(data.role);
           setRestaurantId(data.restaurantId);
+
+          // Authenticate client Firebase SDK using minted Custom Token
+          if (data.customToken) {
+            await signInWithCustomToken(auth, data.customToken).catch((err) => {
+              console.warn('Failed to sign in with custom token:', err);
+            });
+          }
+
           setIsLoading(false);
           return;
         }
@@ -63,12 +77,12 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Check if current session is authorized for a specific restaurant
   const isAuthorizedFor = useCallback(
     (venueId: string): boolean => {
-      if (!isAuthenticated || !role) return false;
-      // Super admin is authorized for EVERY restaurant directly without password
+      if (!isAuthenticated || !role || !venueId) return false;
+      // Super admin is authorized for EVERY restaurant
       if (role === 'super_admin') return true;
-      // Restaurant owner is authorized if matching restaurantId
+      // Restaurant owner must have an explicit matching restaurantId
       if (role === 'restaurant_owner') {
-        if (!restaurantId) return true;
+        if (!restaurantId) return false;
         return restaurantId === venueId;
       }
       return false;
@@ -80,12 +94,21 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const loginRestaurant = async (
     venueId: string,
     password: string
-  ): Promise<{ success: boolean; error?: string; remainingMinutes?: number }> => {
+  ): Promise<{
+    success: boolean;
+    error?: string;
+    code?: string;
+    remainingSeconds?: number;
+    mustChangePassword?: boolean;
+  }> => {
     try {
       const cleanPassword = normalizeArabicDigits(password.trim());
       const res = await fetch('/api/admin/restaurant-login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
         credentials: 'include',
         body: JSON.stringify({ restaurantId: venueId, password: cleanPassword }),
       });
@@ -100,11 +123,75 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setIsAuthenticated(true);
         setRole(data.role || 'restaurant_owner');
         setRestaurantId(data.restaurantId || venueId);
-        try {
-          sessionStorage.setItem(ADMIN_STORAGE_KEY, 'true');
-        } catch {
-          // Ignore
+
+        // Authenticate client Firebase SDK with custom token
+        if (data.customToken) {
+          await signInWithCustomToken(auth, data.customToken).catch((err) => {
+            console.warn('Custom token bridge error:', err);
+          });
         }
+
+        return {
+          success: true,
+          mustChangePassword: Boolean(data.mustChangePassword),
+        };
+      }
+
+      if (res.status === 429) {
+        return {
+          success: false,
+          error: data.error || 'تم إيقاف المحاولات مؤقتًا لتكرار المحاولات غير الصحيحة',
+          code: data.code || 'RATE_LIMITED',
+          remainingSeconds: data.remainingSeconds || 900,
+        };
+      }
+
+      return {
+        success: false,
+        error: data.error || 'تعذر تسجيل الدخول للمطعم',
+        code: data.code || `HTTP_${res.status}`,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `تعذر الاتصال بالخادم (${err?.message || 'Network Error'})`,
+        code: 'NETWORK_ERROR',
+      };
+    }
+  };
+
+  const loginSuperAdmin = async (
+    pass: string
+  ): Promise<{ success: boolean; error?: string; code?: string; remainingSeconds?: number }> => {
+    try {
+      const cleanPass = normalizeArabicDigits(pass.trim());
+      const res = await fetch('/api/super-admin/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ password: cleanPass }),
+      });
+
+      const contentType = res.headers.get('content-type') || '';
+      let data: any = {};
+      if (contentType.includes('application/json')) {
+        data = await res.json().catch(() => ({}));
+      }
+
+      if (res.ok && data.success) {
+        setIsAuthenticated(true);
+        setRole('super_admin');
+        setRestaurantId(null);
+
+        if (data.customToken) {
+          await signInWithCustomToken(auth, data.customToken).catch((err) => {
+            console.warn('Super Admin custom token bridge error:', err);
+          });
+        }
+
         return { success: true };
       }
 
@@ -112,57 +199,47 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return {
           success: false,
           error: data.error || 'تم إيقاف المحاولات مؤقتًا لتكرار المحاولات غير الصحيحة',
-          remainingMinutes: data.remainingMinutes || 15,
-        };
-      }
-
-      if (res.status === 404) {
-        return {
-          success: false,
-          error: data.error || 'لم يتم العثور على هذا المطعم',
-        };
-      }
-
-      if (res.status === 401) {
-        return {
-          success: false,
-          error: data.error || 'كلمة المرور غير صحيحة',
+          code: data.code || 'RATE_LIMITED',
+          remainingSeconds: data.remainingSeconds || 900,
         };
       }
 
       return {
         success: false,
-        error: data.error || `خطأ ${res.status}: تعذر تسجيل الدخول للمطعم`,
+        error: data.error || 'كلمة مرور المدير العام غير صحيحة',
+        code: data.code || `HTTP_${res.status}`,
       };
     } catch (err: any) {
       return {
         success: false,
-        error: `تعذر الاتصال بالخادم (${err?.message || 'Network Error'}) - تحقق من اتصالك بالإنترنت`,
+        error: `تعذر الاتصال بالخادم (${err?.message || 'Network Error'})`,
+        code: 'NETWORK_ERROR',
       };
     }
   };
 
-  // Backward-compatible login method
-  const login = async (password: string, venueId?: string): Promise<boolean> => {
-    if (venueId) {
-      const result = await loginRestaurant(venueId, password);
-      return result.success;
+  const login = async (pass: string, targetVenueId?: string): Promise<boolean> => {
+    if (targetVenueId) {
+      const res = await loginRestaurant(targetVenueId, pass);
+      return res.success;
     }
-    return false;
+    const res = await loginSuperAdmin(pass);
+    return res.success;
   };
 
   const logout = async (): Promise<void> => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'include',
+      });
     } catch {
       // Ignore
     }
-    try {
-      sessionStorage.removeItem(ADMIN_STORAGE_KEY);
-      localStorage.removeItem(ADMIN_STORAGE_KEY);
-    } catch {
-      // Ignore
-    }
+    // Sign out of Firebase Client Auth
+    await signOut(auth).catch(() => {});
+
     setIsAuthenticated(false);
     setRole(null);
     setRestaurantId(null);
@@ -177,6 +254,7 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         isLoading,
         isAuthorizedFor,
         loginRestaurant,
+        loginSuperAdmin,
         login,
         logout,
         refreshSession,

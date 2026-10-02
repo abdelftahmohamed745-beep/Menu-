@@ -1,329 +1,175 @@
-import { initializeApp as initClientApp, getApps as getClientApps, getApp as getClientApp } from 'firebase/app';
+import { initializeApp, getApps, cert, App } from 'firebase-admin/app';
+import { getFirestore, Firestore } from 'firebase-admin/firestore';
+import { getAuth, Auth } from 'firebase-admin/auth';
 import {
-  getFirestore as getClientFirestore,
-  Firestore as ClientFirestore,
-  doc as clientDoc,
-  getDoc as clientGetDoc,
-  setDoc as clientSetDoc,
-  updateDoc as clientUpdateDoc,
-  deleteDoc as clientDeleteDoc,
-  collection as clientCollection,
-  getDocs as clientGetDocs,
-  query as clientQuery,
-  where as clientWhere,
-} from 'firebase/firestore';
-import {
-  initializeApp as initAdminApp,
-  cert,
-  getApps as getAdminApps,
-  App as AdminApp,
-} from 'firebase-admin/app';
-import {
-  getFirestore as getAdminFirestore,
-  Firestore as AdminFirestore,
-} from 'firebase-admin/firestore';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+  FIRESTORE_DATABASE_ID,
+  FIREBASE_PROJECT_ID_DEFAULT,
+  cleanString,
+  cleanPrivateKey,
+} from './config';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+let cachedApp: App | null = null;
+let cachedDb: Firestore | null = null;
+let cachedAuth: Auth | null = null;
 
-// Embedded guaranteed fallback configuration
-export const DEFAULT_FIREBASE_CONFIG = {
-  projectId: 'keen-flame-j53bd',
-  appId: '1:517049151189:web:44f8985b1bb60664d27c5c',
-  apiKey: 'AIzaSyDK6aErcKxY1aL_8gMsqQnGcBUUS9wN_uw',
-  authDomain: 'keen-flame-j53bd.firebaseapp.com',
-  firestoreDatabaseId: 'ai-studio-6515c201-ec9e-4f37-b01d-e3683d1a8c6e',
-  storageBucket: 'keen-flame-j53bd.firebasestorage.app',
-};
-
-// ---------------------------------------------------------------------------
-// Helpers to sanitize environment strings
-// ---------------------------------------------------------------------------
-export function cleanEnvString(val?: string): string {
-  if (!val) return '';
-  let str = val.trim();
-  if (
-    (str.startsWith('"') && str.endsWith('"')) ||
-    (str.startsWith("'") && str.endsWith("'"))
-  ) {
-    str = str.slice(1, -1).trim();
-  }
-  return str;
-}
-
-export function cleanPrivateKey(raw?: string): string {
-  if (!raw) return '';
-  let key = raw.trim();
-  if (
-    (key.startsWith('"') && key.endsWith('"')) ||
-    (key.startsWith("'") && key.endsWith("'"))
-  ) {
-    key = key.slice(1, -1);
-  }
-  // Replace literal '\n' characters with actual newlines
-  key = key.replace(/\\n/g, '\n');
-  return key.trim();
-}
-
-function resolveClientConfig() {
-  const possiblePaths = [
-    path.resolve(process.cwd(), 'firebase-applet-config.json'),
-    path.resolve(__dirname, '..', '..', 'firebase-applet-config.json'),
-    path.resolve(__dirname, 'firebase-applet-config.json'),
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      try {
-        const raw = fs.readFileSync(p, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed.projectId && parsed.apiKey) {
-          return parsed;
-        }
-      } catch {
-        // ignore
-      }
+export function getMissingAdminEnv(): string[] {
+  const missing: string[] = [];
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!serviceAccountJson) {
+    if (!cleanString(process.env.FIREBASE_CLIENT_EMAIL)) {
+      missing.push('FIREBASE_CLIENT_EMAIL');
+    }
+    if (!cleanPrivateKey(process.env.FIREBASE_PRIVATE_KEY)) {
+      missing.push('FIREBASE_PRIVATE_KEY');
     }
   }
-
-  return {
-    projectId: cleanEnvString(process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID) || DEFAULT_FIREBASE_CONFIG.projectId,
-    apiKey: cleanEnvString(process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY) || DEFAULT_FIREBASE_CONFIG.apiKey,
-    authDomain: cleanEnvString(process.env.VITE_FIREBASE_AUTH_DOMAIN) || DEFAULT_FIREBASE_CONFIG.authDomain,
-    firestoreDatabaseId: cleanEnvString(process.env.VITE_FIREBASE_DATABASE_ID) || DEFAULT_FIREBASE_CONFIG.firestoreDatabaseId,
-    appId: DEFAULT_FIREBASE_CONFIG.appId,
-  };
+  return missing;
 }
 
-export const activeClientConfig = resolveClientConfig();
+export function isFirebaseAdminConfigured(): boolean {
+  return getMissingAdminEnv().length === 0;
+}
 
-// Initialize Client SDK
-export const serverFirebaseApp =
-  getClientApps().length === 0 ? initClientApp(activeClientConfig) : getClientApp();
+export function getAdminApp(): App {
+  if (cachedApp) return cachedApp;
 
-export const serverDb: ClientFirestore = getClientFirestore(
-  serverFirebaseApp,
-  activeClientConfig.firestoreDatabaseId || undefined
-);
-
-// ---------------------------------------------------------------------------
-// Firebase Admin SDK (Privileged Server-Side SDK - Bypasses Security Rules)
-// ---------------------------------------------------------------------------
-let adminAppInstance: AdminApp | null = null;
-let adminDbInstance: AdminFirestore | null = null;
-let adminInitError: string | null = null;
-
-export function initFirebaseAdmin(): { app: AdminApp | null; db: AdminFirestore | null; error: string | null } {
-  if (adminDbInstance) {
-    return { app: adminAppInstance, db: adminDbInstance, error: null };
+  const existingApps = getApps();
+  if (existingApps.length > 0) {
+    cachedApp = existingApps[0];
+    return cachedApp;
   }
 
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  let certObj: any;
+
+  if (serviceAccountJson) {
+    try {
+      certObj = JSON.parse(serviceAccountJson);
+    } catch (err: any) {
+      throw new Error(`BAD_SERVICE_ACCOUNT_JSON: ${err.message}`);
+    }
+  } else {
+    const clientEmail = cleanString(process.env.FIREBASE_CLIENT_EMAIL);
+    const privateKey = cleanPrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+    const projectId =
+      cleanString(process.env.FIREBASE_PROJECT_ID) || FIREBASE_PROJECT_ID_DEFAULT;
+
+    if (!clientEmail || !privateKey) {
+      throw new Error(
+        `MISSING_ENV:${!clientEmail ? 'FIREBASE_CLIENT_EMAIL' : 'FIREBASE_PRIVATE_KEY'}`
+      );
+    }
+
+    certObj = {
+      projectId,
+      clientEmail,
+      privateKey,
+    };
+  }
+
+  cachedApp = initializeApp({
+    credential: cert(certObj),
+    projectId: certObj.projectId,
+  });
+
+  return cachedApp;
+}
+
+export function getAdminDb(): Firestore {
+  if (cachedDb) return cachedDb;
+  const app = getAdminApp();
   try {
-    const rawKey = process.env.FIREBASE_PRIVATE_KEY;
-    const rawEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    const rawProjectId = process.env.FIREBASE_PROJECT_ID;
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-
-    if (serviceAccountJson || (rawKey && rawEmail)) {
-      const existingApps = getAdminApps();
-      if (existingApps.length === 0) {
-        let certObj: any;
-        if (serviceAccountJson) {
-          certObj = JSON.parse(serviceAccountJson);
-        } else {
-          certObj = {
-            projectId: cleanEnvString(rawProjectId) || activeClientConfig.projectId,
-            clientEmail: cleanEnvString(rawEmail),
-            privateKey: cleanPrivateKey(rawKey),
-          };
-        }
-
-        adminAppInstance = initAdminApp({
-          credential: cert(certObj),
-          projectId: certObj.projectId,
-        });
-      } else {
-        adminAppInstance = existingApps[0];
-      }
-
-      if (adminAppInstance) {
-        const dbId = activeClientConfig.firestoreDatabaseId;
-        if (dbId) {
-          try {
-            adminDbInstance = getAdminFirestore(adminAppInstance, dbId);
-          } catch {
-            adminDbInstance = getAdminFirestore(adminAppInstance);
-          }
-        } else {
-          adminDbInstance = getAdminFirestore(adminAppInstance);
-        }
-      }
-    }
-  } catch (err: any) {
-    adminInitError = err?.message || String(err);
-    console.warn('[FirebaseAdmin] Failed to initialize Admin SDK:', adminInitError);
+    cachedDb = getFirestore(app, FIRESTORE_DATABASE_ID);
+  } catch (err) {
+    // Fallback to default database if named database selector fails
+    cachedDb = getFirestore(app);
   }
-
-  return { app: adminAppInstance, db: adminDbInstance, error: adminInitError };
+  return cachedDb;
 }
 
-// Attempt initialization on module load
-initFirebaseAdmin();
-
-export function getDatabaseMode(): {
-  mode: 'firebase-admin' | 'firebase-web';
-  adminInitialized: boolean;
-  error?: string | null;
-} {
-  if (adminDbInstance) {
-    return { mode: 'firebase-admin', adminInitialized: true };
-  }
-  return {
-    mode: 'firebase-web',
-    adminInitialized: false,
-    error: adminInitError,
-  };
+export function getAdminAuth(): Auth {
+  if (cachedAuth) return cachedAuth;
+  const app = getAdminApp();
+  cachedAuth = getAuth(app);
+  return cachedAuth;
 }
 
-// ---------------------------------------------------------------------------
-// Unified Server Database Operations (Uses Admin SDK if available, else Client SDK)
-// ---------------------------------------------------------------------------
+// Cached diagnostics for write test (60s cache to avoid excessive writes)
+let lastWriteTestResult: { success: boolean; time: number; error?: string } | null =
+  null;
 
-export async function serverGetDoc(collectionName: string, docId: string): Promise<any | null> {
-  if (adminDbInstance) {
-    const snap = await adminDbInstance.collection(collectionName).doc(docId).get();
-    if (!snap.exists) return null;
-    return { id: snap.id, ...snap.data() };
-  }
-
-  const snap = await clientGetDoc(clientDoc(serverDb, collectionName, docId));
-  if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() };
-}
-
-export async function serverSetDoc(
-  collectionName: string,
-  docId: string,
-  data: any,
-  merge: boolean = false
-): Promise<void> {
-  if (adminDbInstance) {
-    await adminDbInstance.collection(collectionName).doc(docId).set(data, { merge });
-    return;
-  }
-
-  await clientSetDoc(clientDoc(serverDb, collectionName, docId), data, { merge });
-}
-
-export async function serverUpdateDoc(
-  collectionName: string,
-  docId: string,
-  data: any
-): Promise<void> {
-  if (adminDbInstance) {
-    await adminDbInstance.collection(collectionName).doc(docId).update(data);
-    return;
-  }
-
-  await clientUpdateDoc(clientDoc(serverDb, collectionName, docId), data);
-}
-
-export async function serverDeleteDoc(
-  collectionName: string,
-  docId: string
-): Promise<void> {
-  if (adminDbInstance) {
-    await adminDbInstance.collection(collectionName).doc(docId).delete();
-    return;
-  }
-
-  await clientDeleteDoc(clientDoc(serverDb, collectionName, docId));
-}
-
-export async function serverGetDocs(
-  collectionName: string,
-  filter?: { field: string; op: '==' | '<=' | '>='; value: any }
-): Promise<Array<{ id: string; [key: string]: any }>> {
-  if (adminDbInstance) {
-    let ref: any = adminDbInstance.collection(collectionName);
-    if (filter) {
-      ref = ref.where(filter.field, filter.op, filter.value);
-    }
-    const snap = await ref.get();
-    return snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
-  }
-
-  let q: any = clientCollection(serverDb, collectionName);
-  if (filter) {
-    q = clientQuery(q, clientWhere(filter.field, filter.op, filter.value));
-  }
-  const snap = await clientGetDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Record<string, any>) }));
-}
-
-// ---------------------------------------------------------------------------
-// Comprehensive Health Diagnostics (Read + Write + Delete check on temp doc)
-// ---------------------------------------------------------------------------
-export async function testFirestoreDiagnostics(): Promise<{
+export async function testAdminFirestoreDiagnostics(): Promise<{
   connected: boolean;
   read: boolean;
   write: boolean;
   delete: boolean;
-  mode: 'firebase-admin' | 'firebase-web';
+  mode: 'firebase-admin' | 'missing';
   error: string | null;
 }> {
-  const modeInfo = getDatabaseMode();
-  const testDocId = `health_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const testData = {
-    test: true,
-    timestamp: new Date().toISOString(),
-  };
+  if (!isFirebaseAdminConfigured()) {
+    const missing = getMissingAdminEnv();
+    return {
+      connected: false,
+      read: false,
+      write: false,
+      delete: false,
+      mode: 'missing',
+      error: `المتغيرات التالية ناقصة لتشغيل Firebase Admin SDK: ${missing.join(', ')}`,
+    };
+  }
 
-  let writeSuccess = false;
-  let readSuccess = false;
-  let deleteSuccess = false;
+  let db: Firestore;
+  try {
+    db = getAdminDb();
+  } catch (err: any) {
+    return {
+      connected: false,
+      read: false,
+      write: false,
+      delete: false,
+      mode: 'missing',
+      error: err.message || 'فشل تهيئة Firebase Admin SDK',
+    };
+  }
+
+  let readOk = false;
+  let writeOk = false;
+  let deleteOk = false;
   let failureError: string | null = null;
 
   try {
-    // 1. Write test
-    await serverSetDoc('system_health', testDocId, testData);
-    writeSuccess = true;
+    // 1. Read test on venues collection
+    await db.collection('venues').limit(1).get();
+    readOk = true;
 
-    // 2. Read test
-    const readDoc = await serverGetDoc('system_health', testDocId);
-    if (readDoc && readDoc.test === true) {
-      readSuccess = true;
+    // 2. Write + Delete test with 60s cache
+    const now = Date.now();
+    if (lastWriteTestResult && now - lastWriteTestResult.time < 60000) {
+      writeOk = lastWriteTestResult.success;
+      deleteOk = lastWriteTestResult.success;
+      if (lastWriteTestResult.error) failureError = lastWriteTestResult.error;
+    } else {
+      const testId = `diag_${now}_${Math.random().toString(36).substring(2, 6)}`;
+      const testRef = db.collection('system_health').doc(testId);
+      await testRef.set({ test: true, time: new Date().toISOString() });
+      writeOk = true;
+
+      await testRef.delete();
+      deleteOk = true;
+
+      lastWriteTestResult = { success: true, time: now };
     }
-
-    // 3. Delete test
-    await serverDeleteDoc('system_health', testDocId);
-    deleteSuccess = true;
   } catch (err: any) {
     failureError = err?.message || String(err);
-    console.error('[FirestoreDiagnostics] Error performing test read/write/delete:', failureError);
-
-    // Fallback: try reading an existing venues collection just to verify basic read connectivity
-    if (!readSuccess) {
-      try {
-        await serverGetDocs('venues');
-        readSuccess = true;
-      } catch (readErr: any) {
-        if (!failureError) failureError = readErr?.message || String(readErr);
-      }
-    }
+    lastWriteTestResult = { success: false, time: Date.now(), error: failureError };
   }
 
-  const isConnected = readSuccess || (writeSuccess && deleteSuccess);
-
   return {
-    connected: isConnected,
-    read: readSuccess,
-    write: writeSuccess,
-    delete: deleteSuccess,
-    mode: modeInfo.mode,
+    connected: readOk,
+    read: readOk,
+    write: writeOk,
+    delete: deleteOk,
+    mode: 'firebase-admin',
     error: failureError,
   };
 }

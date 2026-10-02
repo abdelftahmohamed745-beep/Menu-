@@ -1,9 +1,17 @@
 {
   "version": 2,
+  "functions": {
+    "api/*.ts": {
+      "maxDuration": 15
+    },
+    "api/*.mjs": {
+      "maxDuration": 15
+    }
+  },
   "rewrites": [
+    { "source": "/api/ping", "destination": "/api/ping" },
     { "source": "/api/health", "destination": "/api/health" },
     { "source": "/api/(.*)", "destination": "/api" },
-    { "source": "/r/(.*)", "destination": "/api" },
-    { "source": "/((?!api|r).*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

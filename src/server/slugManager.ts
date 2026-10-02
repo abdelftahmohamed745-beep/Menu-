@@ -1,16 +1,5 @@
-import {
-  doc,
-  getDoc,
-  getDocs,
-  collection,
-  query,
-  where,
-  runTransaction,
-  setDoc,
-  updateDoc,
-} from 'firebase/firestore';
-import { serverDb } from './db';
-import { Venue, VenueSlugAlias } from '../types';
+import { getAdminDb } from './db';
+import { VenueSlugAlias } from '../types';
 
 export const RESERVED_PUBLIC_IDS = new Set([
   'super-admin',
@@ -36,6 +25,8 @@ export const RESERVED_PUBLIC_IDS = new Set([
   'home',
   'default',
   'app',
+  'health',
+  'ping',
 ]);
 
 export interface SlugValidationResult {
@@ -44,15 +35,6 @@ export interface SlugValidationResult {
   cleanedSlug?: string;
 }
 
-/**
- * Validate a candidate public ID (slug)
- * Rules:
- * - 4 to 32 characters
- * - Only a-z, 0-9, and hyphen
- * - Cannot start or end with hyphen
- * - Case-insensitive (normalized to lowercase)
- * - Cannot be in reserved words list
- */
 export function validatePublicId(rawSlug: string): SlugValidationResult {
   if (!rawSlug || typeof rawSlug !== 'string') {
     return { isValid: false, error: 'معرّف المطعم مطلوب ولا يمكن تركه فارغاً' };
@@ -79,7 +61,8 @@ export function validatePublicId(rawSlug: string): SlugValidationResult {
   if (!regex.test(cleaned)) {
     return {
       isValid: false,
-      error: 'معرّف المطعم يجب أن يحتوي على أحرف إنجليزية وأرقام وشرطة (-) فقط، وبدون مسافات أو رموز خاصة',
+      error:
+        'معرّف المطعم يجب أن يحتوي على أحرف إنجليزية وأرقام وشرطة (-) فقط، وبدون مسافات أو رموز خاصة',
     };
   }
 
@@ -97,7 +80,7 @@ export interface SlugAuditLogEntry {
 }
 
 /**
- * Atomically change a restaurant's public ID in a race-condition-safe Firestore transaction.
+ * Atomically change a restaurant's public ID in a race-condition-safe Firestore transaction using Admin SDK.
  */
 export async function changeRestaurantSlugTransaction(params: {
   venueId: string;
@@ -118,30 +101,30 @@ export async function changeRestaurantSlugTransaction(params: {
   }
   const newSlug = validation.cleanedSlug;
 
-  // 2. Perform atomic transaction
-  return await runTransaction(serverDb, async (transaction) => {
+  const db = getAdminDb();
+
+  return await db.runTransaction(async (transaction) => {
     // Check if newSlug is already claimed in slug_registry
-    const registryDocRef = doc(serverDb, 'slug_registry', newSlug);
+    const registryDocRef = db.collection('slug_registry').doc(newSlug);
     const registrySnap = await transaction.get(registryDocRef);
 
-    if (registrySnap.exists()) {
-      const regData = registrySnap.data();
-      // If it belongs to another venue and is active, reject
+    if (registrySnap.exists) {
+      const regData = registrySnap.data() as any;
       if (regData.venueId !== venueId && regData.isActive !== false) {
         throw new Error('هذا المعرّف مستخدم بالفعل لمطعم آخر، يرجى اختيار معرّف مختلف');
       }
     }
 
     // Read the venue document
-    const venueDocRef = doc(serverDb, 'venues', venueId);
+    const venueDocRef = db.collection('venues').doc(venueId);
     const venueSnap = await transaction.get(venueDocRef);
 
-    if (!venueSnap.exists()) {
+    if (!venueSnap.exists) {
       throw new Error('لم يتم العثور على المطعم المحدد');
     }
 
-    const venueData = venueSnap.data() as Venue;
-    const oldSlug = (venueData.slug || venueData.id).trim().toLowerCase();
+    const venueData = venueSnap.data() as any;
+    const oldSlug = (venueData.slug || venueId).trim().toLowerCase();
 
     // If newSlug is identical to current slug, nothing to change
     if (oldSlug === newSlug) {
@@ -153,7 +136,6 @@ export async function changeRestaurantSlugTransaction(params: {
       };
     }
 
-    // Prepare previousSlugs list for venue document
     const previousSlugs: VenueSlugAlias[] = Array.isArray(venueData.previousSlugs)
       ? [...venueData.previousSlugs]
       : [];
@@ -192,7 +174,7 @@ export async function changeRestaurantSlugTransaction(params: {
     });
 
     // 2. Set old slug in slug_registry as redirect alias
-    const oldRegistryDocRef = doc(serverDb, 'slug_registry', oldSlug);
+    const oldRegistryDocRef = db.collection('slug_registry').doc(oldSlug);
     transaction.set(oldRegistryDocRef, {
       slug: oldSlug,
       venueId,
@@ -201,22 +183,18 @@ export async function changeRestaurantSlugTransaction(params: {
       updatedAt: now,
     });
 
-    // 3. Update venue document
+    // 3. Update venue doc with new slug and updated aliases list
     transaction.update(venueDocRef, {
       slug: newSlug,
       previousSlugs,
       updatedAt: now,
     });
 
-    // 4. Record audit log
-    const auditDocRef = doc(
-      serverDb,
-      'restaurant_slug_audit_logs',
-      `${venueId}_${Date.now()}`
-    );
+    // 4. Log audit entry
+    const auditDocRef = db.collection('restaurant_slug_audit_logs').doc(`${venueId}_${Date.now()}`);
     transaction.set(auditDocRef, {
       venueId,
-      venueName: venueData.name || 'بدون اسم',
+      venueName: venueData.name || 'مطعم',
       oldSlug,
       newSlug,
       changedBy,
@@ -233,44 +211,48 @@ export async function changeRestaurantSlugTransaction(params: {
 }
 
 /**
- * Toggle an alias redirect status (active/inactive) in both venue document and slug_registry.
+ * Toggle whether an old redirect alias is actively forwarding or deactivated.
  */
 export async function toggleAliasStatus(
   venueId: string,
-  aliasSlug: string
-): Promise<{ success: boolean; isActive: boolean }> {
-  const cleanAlias = aliasSlug.trim().toLowerCase();
+  aliasSlugRaw: string
+): Promise<{ success: boolean; aliasSlug: string; isActive: boolean }> {
+  const aliasSlug = aliasSlugRaw.trim().toLowerCase();
+  const db = getAdminDb();
 
-  return await runTransaction(serverDb, async (transaction) => {
-    const venueDocRef = doc(serverDb, 'venues', venueId);
+  return await db.runTransaction(async (transaction) => {
+    const venueDocRef = db.collection('venues').doc(venueId);
     const venueSnap = await transaction.get(venueDocRef);
 
-    if (!venueSnap.exists()) {
-      throw new Error('المطعم غير موجود');
+    if (!venueSnap.exists) {
+      throw new Error('لم يتم العثور على المطعم');
     }
 
-    const venueData = venueSnap.data() as Venue;
+    const venueData = venueSnap.data() as any;
     const previousSlugs: VenueSlugAlias[] = Array.isArray(venueData.previousSlugs)
       ? [...venueData.previousSlugs]
       : [];
 
-    const aliasItem = previousSlugs.find(
-      (p) => p.slug.toLowerCase() === cleanAlias
-    );
-
-    if (!aliasItem) {
-      throw new Error('الرابط القديم غير موجود في قائمة التحويلات لهذا المطعم');
+    const aliasIdx = previousSlugs.findIndex((p) => p.slug.toLowerCase() === aliasSlug);
+    if (aliasIdx === -1) {
+      throw new Error('الرابط القديم غير موجود في قائمة تحويلات هذا المطعم');
     }
 
-    const newStatus = !aliasItem.isActive;
-    aliasItem.isActive = newStatus;
+    const newStatus = !previousSlugs[aliasIdx].isActive;
+    previousSlugs[aliasIdx].isActive = newStatus;
 
-    // Update in slug_registry
-    const registryDocRef = doc(serverDb, 'slug_registry', cleanAlias);
+    // Update venue doc
+    transaction.update(venueDocRef, {
+      previousSlugs,
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Update slug_registry doc
+    const regDocRef = db.collection('slug_registry').doc(aliasSlug);
     transaction.set(
-      registryDocRef,
+      regDocRef,
       {
-        slug: cleanAlias,
+        slug: aliasSlug,
         venueId,
         type: 'alias',
         isActive: newStatus,
@@ -279,42 +261,30 @@ export async function toggleAliasStatus(
       { merge: true }
     );
 
-    // Update in venue document
-    transaction.update(venueDocRef, {
-      previousSlugs,
-      updatedAt: new Date().toISOString(),
-    });
-
-    return { success: true, isActive: newStatus };
+    return {
+      success: true,
+      aliasSlug,
+      isActive: newStatus,
+    };
   });
 }
 
 /**
- * Get audit logs for slug changes.
+ * Fetch slug change audit logs for a venue or all venues (Super Admin).
  */
 export async function getSlugAuditLogs(venueId?: string): Promise<SlugAuditLogEntry[]> {
-  try {
-    let q;
-    if (venueId) {
-      q = query(
-        collection(serverDb, 'restaurant_slug_audit_logs'),
-        where('venueId', '==', venueId)
-      );
-    } else {
-      q = collection(serverDb, 'restaurant_slug_audit_logs');
-    }
+  const db = getAdminDb();
+  let queryRef: any = db.collection('restaurant_slug_audit_logs');
 
-    const snapshot = await getDocs(q);
-    const logs: SlugAuditLogEntry[] = [];
-    snapshot.forEach((d) => {
-      logs.push({ id: d.id, ...(d.data() as SlugAuditLogEntry) });
-    });
-
-    return logs.sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
-  } catch (err) {
-    console.error('Error fetching slug audit logs:', err);
-    return [];
+  if (venueId) {
+    queryRef = queryRef.where('venueId', '==', venueId);
   }
+
+  queryRef = queryRef.orderBy('timestamp', 'desc').limit(100);
+
+  const snapshot = await queryRef.get();
+  return snapshot.docs.map((d: any) => ({
+    id: d.id,
+    ...(d.data() as any),
+  }));
 }

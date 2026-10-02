@@ -1,15 +1,19 @@
 {
-  "name": "react-example",
+  "name": "menu-qr",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
-    "start": "node server.ts",
+    "build": "vite build && esbuild src/server/app.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/_server.mjs",
+    "start": "tsx server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "clean": "rm -rf dist api/_server.mjs",
+    "lint": "tsc --noEmit",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

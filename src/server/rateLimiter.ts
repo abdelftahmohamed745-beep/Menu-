@@ -1,6 +1,5 @@
 import crypto from 'crypto';
-import { FieldValue } from 'firebase-admin/firestore';
-import { getAdminDb } from './db';
+import { getAdminDb, isFirebaseAdminConfigured } from './db';
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -13,11 +12,75 @@ export function hashString(str: string): string {
   return crypto.createHash('sha256').update(str.trim()).digest('hex');
 }
 
+// In-memory fallback if Admin SDK is not yet configured or Firestore has temporary connectivity issue
+const memoryLimits = new Map<
+  string,
+  { attempts: number; firstAttemptAt: number; lockedUntil: number }
+>();
+
+function checkMemoryLimit(
+  scopeHash: string,
+  maxAttempts: number,
+  lockoutDurationMs: number
+): RateLimitResult {
+  const now = Date.now();
+  const entry = memoryLimits.get(scopeHash);
+  if (!entry) return { allowed: true };
+
+  if (entry.lockedUntil > now) {
+    const remainingSeconds = Math.max(1, Math.ceil((entry.lockedUntil - now) / 1000));
+    const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+    return {
+      allowed: false,
+      remainingLockoutSeconds: remainingSeconds,
+      remainingMinutes,
+      arabicMessage: `تم إيقاف المحاولات مؤقتًا لتكرار المحاولات غير الصحيحة. يرجى الانتظار ${remainingMinutes} دقيقة قبل المحاولة مرة أخرى.`,
+    };
+  }
+
+  if (now - entry.firstAttemptAt > 60 * 1000) {
+    memoryLimits.delete(scopeHash);
+    return { allowed: true };
+  }
+
+  if (entry.attempts >= maxAttempts) {
+    entry.lockedUntil = now + lockoutDurationMs;
+    const remainingMinutes = Math.ceil(lockoutDurationMs / 60000);
+    return {
+      allowed: false,
+      remainingLockoutSeconds: Math.ceil(lockoutDurationMs / 1000),
+      remainingMinutes,
+      arabicMessage: `تم إيقاف المحاولات مؤقتًا لتكرار المحاولات غير الصحيحة. يرجى الانتظار ${remainingMinutes} دقيقة قبل المحاولة مرة أخرى.`,
+    };
+  }
+
+  return { allowed: true };
+}
+
+function recordMemoryAttempt(
+  scopeHash: string,
+  maxAttempts: number,
+  lockoutDurationMs: number
+): void {
+  const now = Date.now();
+  const entry = memoryLimits.get(scopeHash);
+  if (!entry || now - entry.firstAttemptAt > 60 * 1000) {
+    memoryLimits.set(scopeHash, {
+      attempts: 1,
+      firstAttemptAt: now,
+      lockedUntil: 0,
+    });
+    return;
+  }
+
+  entry.attempts += 1;
+  if (entry.attempts >= maxAttempts) {
+    entry.lockedUntil = now + lockoutDurationMs;
+  }
+}
+
 /**
- * Check and record a rate limit attempt atomically.
- * @param scope Unique key for the attempt, e.g. "super-admin:ipHash" or "restaurant:restaurantId:ipHash"
- * @param maxAttempts Max allowed failed attempts within 1 minute (e.g. 3 for super admin, 5 for restaurant)
- * @param lockoutDurationMs Lockout duration in milliseconds (default 15 minutes)
+ * Check rate limit attempt atomically.
  */
 export async function checkRateLimit(
   scope: string,
@@ -25,11 +88,16 @@ export async function checkRateLimit(
   lockoutDurationMs: number = 15 * 60 * 1000
 ): Promise<RateLimitResult> {
   const scopeHash = hashString(scope);
-  const db = getAdminDb();
-  const docRef = db.collection('rate_limits').doc(scopeHash);
-  const now = Date.now();
+
+  if (!isFirebaseAdminConfigured()) {
+    return checkMemoryLimit(scopeHash, maxAttempts, lockoutDurationMs);
+  }
 
   try {
+    const db = getAdminDb();
+    const docRef = db.collection('rate_limits').doc(scopeHash);
+    const now = Date.now();
+
     const snap = await docRef.get();
     if (!snap.exists) {
       return { allowed: true };
@@ -38,7 +106,6 @@ export async function checkRateLimit(
     const data = snap.data() || {};
     const lockedUntil = Number(data.lockedUntil || 0);
 
-    // 1. Currently locked out
     if (lockedUntil > now) {
       const remainingSeconds = Math.max(1, Math.ceil((lockedUntil - now) / 1000));
       const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
@@ -51,7 +118,6 @@ export async function checkRateLimit(
     }
 
     const firstAttemptAt = Number(data.firstAttemptAt || 0);
-    // 2. Window expired
     if (now - firstAttemptAt > 60 * 1000) {
       await docRef.delete().catch(() => {});
       return { allowed: true };
@@ -64,7 +130,7 @@ export async function checkRateLimit(
         {
           lockedUntil: newLockedUntil,
           updatedAt: now,
-          expiresAt: new Date(newLockedUntil + 24 * 60 * 60 * 1000), // Firestore TTL
+          expiresAt: new Date(newLockedUntil + 24 * 60 * 60 * 1000),
         },
         { merge: true }
       );
@@ -79,9 +145,8 @@ export async function checkRateLimit(
 
     return { allowed: true };
   } catch (err: any) {
-    console.error('[RateLimiter] Error reading rate limit:', err);
-    // Fail closed if Firestore unreachable for auth routes
-    throw new Error('FIRESTORE_UNAVAILABLE');
+    console.warn('[RateLimiter] Firestore read failed, falling back to memory:', err?.message);
+    return checkMemoryLimit(scopeHash, maxAttempts, lockoutDurationMs);
   }
 }
 
@@ -94,11 +159,17 @@ export async function recordFailedAttempt(
   lockoutDurationMs: number = 15 * 60 * 1000
 ): Promise<void> {
   const scopeHash = hashString(scope);
-  const db = getAdminDb();
-  const docRef = db.collection('rate_limits').doc(scopeHash);
-  const now = Date.now();
+
+  if (!isFirebaseAdminConfigured()) {
+    recordMemoryAttempt(scopeHash, maxAttempts, lockoutDurationMs);
+    return;
+  }
 
   try {
+    const db = getAdminDb();
+    const docRef = db.collection('rate_limits').doc(scopeHash);
+    const now = Date.now();
+
     await db.runTransaction(async (transaction) => {
       const snap = await transaction.get(docRef);
       if (!snap.exists) {
@@ -117,7 +188,6 @@ export async function recordFailedAttempt(
       const firstAttemptAt = Number(data.firstAttemptAt || 0);
 
       if (now - firstAttemptAt > 60 * 1000) {
-        // Reset 1-minute window
         transaction.set(docRef, {
           scope,
           attempts: 1,
@@ -137,8 +207,9 @@ export async function recordFailedAttempt(
         });
       }
     });
-  } catch (err) {
-    console.error('[RateLimiter] Error recording failed attempt:', err);
+  } catch (err: any) {
+    console.warn('[RateLimiter] Firestore transaction failed, falling back to memory:', err?.message);
+    recordMemoryAttempt(scopeHash, maxAttempts, lockoutDurationMs);
   }
 }
 
@@ -147,10 +218,14 @@ export async function recordFailedAttempt(
  */
 export async function resetRateLimit(scope: string): Promise<void> {
   const scopeHash = hashString(scope);
-  const db = getAdminDb();
+  memoryLimits.delete(scopeHash);
+
+  if (!isFirebaseAdminConfigured()) return;
+
   try {
+    const db = getAdminDb();
     await db.collection('rate_limits').doc(scopeHash).delete();
   } catch (err) {
-    console.error('[RateLimiter] Error resetting rate limit:', err);
+    console.warn('[RateLimiter] Error resetting rate limit in Firestore:', err);
   }
 }

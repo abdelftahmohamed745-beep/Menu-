@@ -173,12 +173,62 @@ import crypto from "crypto";
 function hashString(str) {
   return crypto.createHash("sha256").update(str.trim()).digest("hex");
 }
+var memoryLimits = /* @__PURE__ */ new Map();
+function checkMemoryLimit(scopeHash, maxAttempts, lockoutDurationMs) {
+  const now = Date.now();
+  const entry = memoryLimits.get(scopeHash);
+  if (!entry) return { allowed: true };
+  if (entry.lockedUntil > now) {
+    const remainingSeconds = Math.max(1, Math.ceil((entry.lockedUntil - now) / 1e3));
+    const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+    return {
+      allowed: false,
+      remainingLockoutSeconds: remainingSeconds,
+      remainingMinutes,
+      arabicMessage: `\u062A\u0645 \u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0627\u062A \u0645\u0624\u0642\u062A\u064B\u0627 \u0644\u062A\u0643\u0631\u0627\u0631 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0627\u062A \u063A\u064A\u0631 \u0627\u0644\u0635\u062D\u064A\u062D\u0629. \u064A\u0631\u062C\u0649 \u0627\u0644\u0627\u0646\u062A\u0638\u0627\u0631 ${remainingMinutes} \u062F\u0642\u064A\u0642\u0629 \u0642\u0628\u0644 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.`
+    };
+  }
+  if (now - entry.firstAttemptAt > 60 * 1e3) {
+    memoryLimits.delete(scopeHash);
+    return { allowed: true };
+  }
+  if (entry.attempts >= maxAttempts) {
+    entry.lockedUntil = now + lockoutDurationMs;
+    const remainingMinutes = Math.ceil(lockoutDurationMs / 6e4);
+    return {
+      allowed: false,
+      remainingLockoutSeconds: Math.ceil(lockoutDurationMs / 1e3),
+      remainingMinutes,
+      arabicMessage: `\u062A\u0645 \u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0627\u062A \u0645\u0624\u0642\u062A\u064B\u0627 \u0644\u062A\u0643\u0631\u0627\u0631 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0627\u062A \u063A\u064A\u0631 \u0627\u0644\u0635\u062D\u064A\u062D\u0629. \u064A\u0631\u062C\u0649 \u0627\u0644\u0627\u0646\u062A\u0638\u0627\u0631 ${remainingMinutes} \u062F\u0642\u064A\u0642\u0629 \u0642\u0628\u0644 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.`
+    };
+  }
+  return { allowed: true };
+}
+function recordMemoryAttempt(scopeHash, maxAttempts, lockoutDurationMs) {
+  const now = Date.now();
+  const entry = memoryLimits.get(scopeHash);
+  if (!entry || now - entry.firstAttemptAt > 60 * 1e3) {
+    memoryLimits.set(scopeHash, {
+      attempts: 1,
+      firstAttemptAt: now,
+      lockedUntil: 0
+    });
+    return;
+  }
+  entry.attempts += 1;
+  if (entry.attempts >= maxAttempts) {
+    entry.lockedUntil = now + lockoutDurationMs;
+  }
+}
 async function checkRateLimit(scope, maxAttempts = 5, lockoutDurationMs = 15 * 60 * 1e3) {
   const scopeHash = hashString(scope);
-  const db = getAdminDb();
-  const docRef = db.collection("rate_limits").doc(scopeHash);
-  const now = Date.now();
+  if (!isFirebaseAdminConfigured()) {
+    return checkMemoryLimit(scopeHash, maxAttempts, lockoutDurationMs);
+  }
   try {
+    const db = getAdminDb();
+    const docRef = db.collection("rate_limits").doc(scopeHash);
+    const now = Date.now();
     const snap = await docRef.get();
     if (!snap.exists) {
       return { allowed: true };
@@ -209,7 +259,6 @@ async function checkRateLimit(scope, maxAttempts = 5, lockoutDurationMs = 15 * 6
           lockedUntil: newLockedUntil,
           updatedAt: now,
           expiresAt: new Date(newLockedUntil + 24 * 60 * 60 * 1e3)
-          // Firestore TTL
         },
         { merge: true }
       );
@@ -223,16 +272,20 @@ async function checkRateLimit(scope, maxAttempts = 5, lockoutDurationMs = 15 * 6
     }
     return { allowed: true };
   } catch (err) {
-    console.error("[RateLimiter] Error reading rate limit:", err);
-    throw new Error("FIRESTORE_UNAVAILABLE");
+    console.warn("[RateLimiter] Firestore read failed, falling back to memory:", err?.message);
+    return checkMemoryLimit(scopeHash, maxAttempts, lockoutDurationMs);
   }
 }
 async function recordFailedAttempt(scope, maxAttempts = 5, lockoutDurationMs = 15 * 60 * 1e3) {
   const scopeHash = hashString(scope);
-  const db = getAdminDb();
-  const docRef = db.collection("rate_limits").doc(scopeHash);
-  const now = Date.now();
+  if (!isFirebaseAdminConfigured()) {
+    recordMemoryAttempt(scopeHash, maxAttempts, lockoutDurationMs);
+    return;
+  }
   try {
+    const db = getAdminDb();
+    const docRef = db.collection("rate_limits").doc(scopeHash);
+    const now = Date.now();
     await db.runTransaction(async (transaction) => {
       const snap = await transaction.get(docRef);
       if (!snap.exists) {
@@ -269,16 +322,19 @@ async function recordFailedAttempt(scope, maxAttempts = 5, lockoutDurationMs = 1
       }
     });
   } catch (err) {
-    console.error("[RateLimiter] Error recording failed attempt:", err);
+    console.warn("[RateLimiter] Firestore transaction failed, falling back to memory:", err?.message);
+    recordMemoryAttempt(scopeHash, maxAttempts, lockoutDurationMs);
   }
 }
 async function resetRateLimit(scope) {
   const scopeHash = hashString(scope);
-  const db = getAdminDb();
+  memoryLimits.delete(scopeHash);
+  if (!isFirebaseAdminConfigured()) return;
   try {
+    const db = getAdminDb();
     await db.collection("rate_limits").doc(scopeHash).delete();
   } catch (err) {
-    console.error("[RateLimiter] Error resetting rate limit:", err);
+    console.warn("[RateLimiter] Error resetting rate limit in Firestore:", err);
   }
 }
 
@@ -655,8 +711,15 @@ function verifySuperAdminPassword(input) {
   const hashB = crypto3.createHash("sha256").update(normalizeDigits(envPass)).digest();
   return crypto3.timingSafeEqual(hashA, hashB);
 }
+function isRequestHttps(req) {
+  try {
+    if (req.secure) return true;
+  } catch {
+  }
+  return req.headers?.["x-forwarded-proto"] === "https";
+}
 function getCookieName(req) {
-  const isHttps = req.secure || req.headers["x-forwarded-proto"] === "https";
+  const isHttps = isRequestHttps(req);
   const isProduction = process.env.NODE_ENV === "production" && !process.env.AIS_DEV;
   if (isProduction && isHttps) {
     return "__Host-app_session_token";
@@ -697,31 +760,50 @@ function parseSignedToken(token) {
   }
 }
 async function getRestaurantSessionVersion(restaurantId) {
-  const db = getAdminDb();
-  const docRef = db.collection("sessions").doc(restaurantId);
-  const snap = await docRef.get();
-  if (snap.exists && snap.data()?.sessionVersion) {
-    return snap.data().sessionVersion;
+  if (!isFirebaseAdminConfigured()) return "v1";
+  try {
+    const db = getAdminDb();
+    const docRef = db.collection("sessions").doc(restaurantId);
+    const snap = await docRef.get();
+    if (snap.exists && snap.data()?.sessionVersion) {
+      return snap.data().sessionVersion;
+    }
+    const newVer = crypto3.randomBytes(8).toString("hex");
+    await docRef.set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
+    return newVer;
+  } catch {
+    return "v1";
   }
-  const newVer = crypto3.randomBytes(8).toString("hex");
-  await docRef.set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
-  return newVer;
 }
 async function bumpRestaurantSessionVersion(restaurantId) {
-  const db = getAdminDb();
-  const newVer = crypto3.randomBytes(8).toString("hex");
-  await db.collection("sessions").doc(restaurantId).set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
+  if (!isFirebaseAdminConfigured()) return;
+  try {
+    const db = getAdminDb();
+    const newVer = crypto3.randomBytes(8).toString("hex");
+    await db.collection("sessions").doc(restaurantId).set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
+  } catch (err) {
+    console.warn("Failed to bump restaurant session version:", err);
+  }
 }
 async function bumpGlobalSessionVersion() {
-  const db = getAdminDb();
-  const newVer = crypto3.randomBytes(8).toString("hex");
-  await db.collection("sessions").doc("_global_super_admin").set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
+  if (!isFirebaseAdminConfigured()) return;
+  try {
+    const db = getAdminDb();
+    const newVer = crypto3.randomBytes(8).toString("hex");
+    await db.collection("sessions").doc("_global_super_admin").set({ sessionVersion: newVer, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { merge: true });
+  } catch (err) {
+    console.warn("Failed to bump global session version:", err);
+  }
 }
 async function getGlobalSessionVersion() {
-  const db = getAdminDb();
-  const snap = await db.collection("sessions").doc("_global_super_admin").get();
-  if (snap.exists && snap.data()?.sessionVersion) {
-    return snap.data().sessionVersion;
+  if (!isFirebaseAdminConfigured()) return "v1";
+  try {
+    const db = getAdminDb();
+    const snap = await db.collection("sessions").doc("_global_super_admin").get();
+    if (snap.exists && snap.data()?.sessionVersion) {
+      return snap.data().sessionVersion;
+    }
+  } catch {
   }
   return "v1";
 }
@@ -737,8 +819,8 @@ function setSessionCookie(req, res, data) {
     exp
   };
   const token = createSignedToken(payload);
-  const isHttps = req.secure || req.headers["x-forwarded-proto"] === "https";
-  const isAiStudio = Boolean(process.env.AIS_DEV || req.headers["sec-fetch-dest"] === "iframe");
+  const isHttps = isRequestHttps(req);
+  const isAiStudio = Boolean(process.env.AIS_DEV || req.headers?.["sec-fetch-dest"] === "iframe");
   const cookieName = getCookieName(req);
   res.cookie(cookieName, token, {
     httpOnly: true,
@@ -755,9 +837,17 @@ function clearSessionCookie(req, res) {
   }
 }
 async function mintFirebaseCustomToken(claims) {
-  const auth = getAdminAuth();
-  const uid = claims.role === "super_admin" ? `admin_${Date.now()}` : `owner_${claims.venueId}_${Date.now()}`;
-  return await auth.createCustomToken(uid, claims);
+  if (!isFirebaseAdminConfigured()) {
+    return null;
+  }
+  try {
+    const auth = getAdminAuth();
+    const uid = claims.role === "super_admin" ? `admin_${Date.now()}` : `owner_${claims.venueId}_${Date.now()}`;
+    return await auth.createCustomToken(uid, claims);
+  } catch (err) {
+    console.warn("[Session] Failed to mint Firebase Custom Token:", err);
+    return null;
+  }
 }
 
 // src/server/app.ts
@@ -819,8 +909,10 @@ function requireCsrf(req, res, next) {
     return next();
   }
   const requestedWith = req.headers["x-requested-with"];
-  const hasContentType = req.is("application/json");
-  if (requestedWith || hasContentType) {
+  const contentType = req.headers["content-type"] || "";
+  const isJsonHeader = contentType.toLowerCase().includes("application/json");
+  const hasContentType = typeof req.is === "function" ? Boolean(req.is("application/json")) : isJsonHeader;
+  if (requestedWith || isJsonHeader || hasContentType) {
     return next();
   }
   res.status(403).json({ error: "\u0637\u0644\u0628 \u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0628\u0647 (CSRF)", code: "CSRF_INVALID" });
@@ -997,30 +1089,39 @@ api.post("/super-admin/login", async (req, res) => {
         code: envErr.message || "MISSING_ENV:SUPER_ADMIN_PASSWORD"
       });
     }
-    const db = getAdminDb();
-    const auditDoc = db.collection("restaurant_slug_audit_logs").doc(`login_${Date.now()}`);
     if (!isMatch) {
       await recordFailedAttempt(scope, 3, 15 * 60 * 1e3);
-      await auditDoc.set({
-        type: "super_admin_login",
-        success: false,
-        ipHash: crypto4.createHash("sha256").update(ip).digest("hex").substring(0, 16),
-        timestamp: (/* @__PURE__ */ new Date()).toISOString()
-      }).catch(() => {
-      });
+      if (isFirebaseAdminConfigured()) {
+        try {
+          const db = getAdminDb();
+          await db.collection("restaurant_slug_audit_logs").doc(`login_${Date.now()}`).set({
+            type: "super_admin_login",
+            success: false,
+            ipHash: crypto4.createHash("sha256").update(ip).digest("hex").substring(0, 16),
+            timestamp: (/* @__PURE__ */ new Date()).toISOString()
+          });
+        } catch {
+        }
+      }
       return res.status(401).json({
+        success: false,
         error: "\u0643\u0644\u0645\u0629 \u0645\u0631\u0648\u0631 \u0627\u0644\u0625\u062F\u0627\u0631\u0629 \u0627\u0644\u0639\u0627\u0645\u0629 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629",
         code: "BAD_PASSWORD"
       });
     }
     await resetRateLimit(scope);
-    await auditDoc.set({
-      type: "super_admin_login",
-      success: true,
-      ipHash: crypto4.createHash("sha256").update(ip).digest("hex").substring(0, 16),
-      timestamp: (/* @__PURE__ */ new Date()).toISOString()
-    }).catch(() => {
-    });
+    if (isFirebaseAdminConfigured()) {
+      try {
+        const db = getAdminDb();
+        await db.collection("restaurant_slug_audit_logs").doc(`login_${Date.now()}`).set({
+          type: "super_admin_login",
+          success: true,
+          ipHash: crypto4.createHash("sha256").update(ip).digest("hex").substring(0, 16),
+          timestamp: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      } catch {
+      }
+    }
     setSessionCookie(req, res, { role: "super_admin" });
     const customToken = await mintFirebaseCustomToken({ role: "super_admin" });
     res.json({
@@ -1178,6 +1279,9 @@ api.get("/public/menu/:slug", async (req, res) => {
     return res.status(400).json({ error: "\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0645\u0637\u0639\u0645 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D", code: "BAD_ID" });
   }
   const cleanSlug = rawSlug.trim().toLowerCase();
+  if (!isFirebaseAdminConfigured()) {
+    return res.status(503).json({ error: "\u0642\u0627\u0639\u062F\u0629 \u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u062E\u0627\u062F\u0645 \u063A\u064A\u0631 \u0645\u0641\u0639\u0644\u0629 \u062D\u0627\u0644\u064A\u0627\u064B", code: "FIRESTORE_UNAVAILABLE" });
+  }
   const db = getAdminDb();
   try {
     let venueDocSnap = await db.collection("venues").doc(rawSlug).get();

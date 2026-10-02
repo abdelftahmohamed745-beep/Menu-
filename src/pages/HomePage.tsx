@@ -1,13 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMenu } from '../context/MenuContext';
-import { QrCode, Plus, ArrowLeft, Store, AlertCircle } from 'lucide-react';
+import { QrCode, ArrowLeft, Store, AlertCircle } from 'lucide-react';
 
 export const HomePage: React.FC = () => {
   const [restaurantIdInput, setRestaurantIdInput] = useState<string>('');
-  const [isCreating, setIsCreating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
-  const { createWorkspace } = useMenu();
   const navigate = useNavigate();
 
   const handleLookup = (e: React.FormEvent) => {
@@ -19,24 +16,6 @@ export const HomePage: React.FC = () => {
       return;
     }
     navigate(`/menu/${idVal}`);
-  };
-
-  const handleCreateNew = async () => {
-    try {
-      setIsCreating(true);
-      setErrorMsg('');
-      const newVenue = await createWorkspace({
-        name: 'مطعم جديد',
-        description: 'مرحباً بكم في قائمتنا الرقمية',
-      });
-      // Navigate to the newly created unique restaurant menu
-      navigate(`/menu/${newVenue.slug || newVenue.id}`);
-    } catch (err) {
-      console.error('Failed to create new restaurant:', err);
-      setErrorMsg('حدث خطأ أثناء إنشاء المطعم، يرجى المحاولة لاحقاً');
-    } finally {
-      setIsCreating(false);
-    }
   };
 
   return (
@@ -99,20 +78,16 @@ export const HomePage: React.FC = () => {
           </div>
         </form>
 
-        {/* Create New Restaurant Section */}
-        <div className="pt-4 border-t border-neutral-100">
+        {/* Super Admin & Support Link */}
+        <div className="pt-4 border-t border-neutral-100 flex items-center justify-between text-[11px] text-neutral-400">
+          <span>إدارة المنصة:</span>
           <button
             type="button"
-            onClick={handleCreateNew}
-            disabled={isCreating}
-            className="w-full py-3 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center justify-center gap-2"
+            onClick={() => navigate('/super-admin')}
+            className="text-amber-700 hover:text-amber-800 font-bold transition-colors cursor-pointer"
           >
-            <Plus className="w-4 h-4" />
-            <span>{isCreating ? 'جاري إنشاء المطعم...' : 'إنشاء منيو جديد لمطعمك الآن'}</span>
+            لوحة الإدارة العامة
           </button>
-          <p className="text-[10px] text-neutral-400 mt-2">
-            سيتم توليد معرف عشوائي وفريد ورابط خاص للمطعم فوراً.
-          </p>
         </div>
       </div>
     </div>

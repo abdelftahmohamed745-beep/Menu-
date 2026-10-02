@@ -121,8 +121,10 @@ function requireCsrf(req: Request, res: Response, next: NextFunction): void {
     return next();
   }
   const requestedWith = req.headers['x-requested-with'];
-  const hasContentType = req.is('application/json');
-  if (requestedWith || hasContentType) {
+  const contentType = (req.headers['content-type'] || '') as string;
+  const isJsonHeader = contentType.toLowerCase().includes('application/json');
+  const hasContentType = typeof req.is === 'function' ? Boolean(req.is('application/json')) : isJsonHeader;
+  if (requestedWith || isJsonHeader || hasContentType) {
     return next();
   }
   res.status(403).json({ error: 'طلب غير مصرح به (CSRF)', code: 'CSRF_INVALID' });
@@ -347,20 +349,21 @@ api.post('/super-admin/login', async (req: Request, res: Response) => {
       });
     }
 
-    const db = getAdminDb();
-    const auditDoc = db.collection('restaurant_slug_audit_logs').doc(`login_${Date.now()}`);
-
     if (!isMatch) {
       await recordFailedAttempt(scope, 3, 15 * 60 * 1000);
-      await auditDoc
-        .set({
-          type: 'super_admin_login',
-          success: false,
-          ipHash: crypto.createHash('sha256').update(ip).digest('hex').substring(0, 16),
-          timestamp: new Date().toISOString(),
-        })
-        .catch(() => {});
+      if (isFirebaseAdminConfigured()) {
+        try {
+          const db = getAdminDb();
+          await db.collection('restaurant_slug_audit_logs').doc(`login_${Date.now()}`).set({
+            type: 'super_admin_login',
+            success: false,
+            ipHash: crypto.createHash('sha256').update(ip).digest('hex').substring(0, 16),
+            timestamp: new Date().toISOString(),
+          });
+        } catch {}
+      }
       return res.status(401).json({
+        success: false,
         error: 'كلمة مرور الإدارة العامة غير صحيحة',
         code: 'BAD_PASSWORD',
       });
@@ -368,14 +371,17 @@ api.post('/super-admin/login', async (req: Request, res: Response) => {
 
     // Success
     await resetRateLimit(scope);
-    await auditDoc
-      .set({
-        type: 'super_admin_login',
-        success: true,
-        ipHash: crypto.createHash('sha256').update(ip).digest('hex').substring(0, 16),
-        timestamp: new Date().toISOString(),
-      })
-      .catch(() => {});
+    if (isFirebaseAdminConfigured()) {
+      try {
+        const db = getAdminDb();
+        await db.collection('restaurant_slug_audit_logs').doc(`login_${Date.now()}`).set({
+          type: 'super_admin_login',
+          success: true,
+          ipHash: crypto.createHash('sha256').update(ip).digest('hex').substring(0, 16),
+          timestamp: new Date().toISOString(),
+        });
+      } catch {}
+    }
 
     setSessionCookie(req, res, { role: 'super_admin' });
     const customToken = await mintFirebaseCustomToken({ role: 'super_admin' });
@@ -581,6 +587,9 @@ api.get('/public/menu/:slug', async (req: Request, res: Response) => {
   }
 
   const cleanSlug = rawSlug.trim().toLowerCase();
+  if (!isFirebaseAdminConfigured()) {
+    return res.status(503).json({ error: 'قاعدة بيانات الخادم غير مفعلة حالياً', code: 'FIRESTORE_UNAVAILABLE' });
+  }
   const db = getAdminDb();
 
   try {

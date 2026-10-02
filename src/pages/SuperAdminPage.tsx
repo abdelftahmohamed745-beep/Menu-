@@ -29,6 +29,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { VenueSlugAlias } from '../types';
+import { BUILD_ID } from '../buildInfo';
 
 interface SuperAdminRestaurant {
   id: string; // Internal immutable ID
@@ -730,7 +731,7 @@ export const SuperAdminPage: React.FC = () => {
             </button>
           </form>
 
-          <div className="text-center pt-2">
+          <div className="text-center pt-2 space-y-2">
             <button
               type="button"
               onClick={() => navigate('/')}
@@ -739,6 +740,9 @@ export const SuperAdminPage: React.FC = () => {
               <span>العودة إلى الصفحة الرئيسية</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
+            <div className="pt-2 text-[10px] text-neutral-600 font-mono tracking-wider">
+              رقم الإصدار (Build): {BUILD_ID}
+            </div>
           </div>
         </div>
       </div>

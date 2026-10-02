@@ -1,78 +1,50 @@
-# دليل نشر وتشغيل تطبيق المنيو الإلكتروني (SPA Deployment Guide)
+# دليل نشر وتشغيل تطبيق المنيو الإلكتروني على Vercel و Node.js
 
-تطبيق المنيو مبني باستخدام **React + Vite + TypeScript** بنظام **Single Page Application (SPA)** مع توجيه المسارات عبر **React Router**.
+تطبيق المنيو الرقمي مبني باستخدام **React + Vite** للواجهة الأمامية و **Express + Firebase Admin SDK** لدوال الخادم (Serverless Functions) على منصة Vercel.
 
 ---
 
-## 1. بناء المشروع للإنتاج (Production Build)
+## 1. آلية البناء التلقائي (Build Pipeline)
 
-قم بتنفيذ أمر البناء التالي لإنشاء ملفات الموقع الجاهزة داخل مجلد `dist/`:
-
+عند تنفيذ أمر البناء على Vercel:
 ```bash
 npm run build
 ```
+يقوم النظام تلقائياً بـ:
+1. توليد معرّف إصدار فريد وتاريخ بناء تلقائي (`scripts/generate-build-id.js`).
+2. تجميع الواجهة الأمامية عبر Vite داخل مجلد `dist/`.
+3. تجميع كود الخادم كاملاً في ملف واحد ذاتي الاحتواء (`api/_server.mjs`) عبر esbuild مستهدفاً بيئة Node 20 ESM.
 
 ---
 
-## 2. إعدادات إعادة التوجيه (SPA Fallback / Rewrites)
+## 2. المتغيرات المطلوبة في Vercel (Environment Variables)
 
-بما أن التطبيق يعتمد على مسارات ديناميكية مثل:
-- `/menu/:slug`
-- `/admin`
-- `/admin/products`
-- `/admin/venue`
+أضف المتغيرات التالية في لوحة تحكم Vercel (Settings ⬅️ Environment Variables):
 
-يجب توجيه كافة الطلبات (HTTP 404 Fallback) إلى ملف `index.html` ليعمل التوجيه الداخلي بسلاسة دون أخطاء عند تحديث الصفحة أو فتح الروابط مباشرة.
-
-### أ) Nginx
-في ملف إعدادات الموقع `nginx.conf`:
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-    root /var/www/dist;
-    index index.html;
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-}
-```
-
-### ب) Vercel
-قم بإنشاء أو تعديل ملف `vercel.json` في جذر المشروع:
-```json
-{
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
-```
-
-### ج) Netlify
-قم بإنشاء ملف باسم `public/_redirects`:
-```text
-/*    /index.html   200
-```
-
-### د) Apache (`.htaccess`)
-في مجلد المشروع:
-```apache
-<IfModule mod_rewrite.c>
-  RewriteEngine On
-  RewriteBase /
-  RewriteRule ^index\.html$ - [L]
-  RewriteCond %{REQUEST_FILENAME} !-f
-  RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteRule . /index.html [L]
-</IfModule>
-```
+| المتغير | الوصف | مثال |
+|---|---|---|
+| `SUPER_ADMIN_PASSWORD` | كلمة مرور بوابة الإدارة العامة (`/super-admin`) | كلمة مرور قوية |
+| `SESSION_SECRET` | مفتاح تشفير التوقيع لملفات تعريف الارتباط (الجلسات) | نص عشوائي لا يقل عن 32 حرفاً |
+| `FIREBASE_PROJECT_ID` | معرّف مشروع فايربيس | `keen-flame-j53bd` |
+| `FIREBASE_CLIENT_EMAIL` | البريد الإلكتروني لحساب الخدمة (Service Account) | `...@...iam.gserviceaccount.com` |
+| `FIREBASE_PRIVATE_KEY` | المفتاح الخاص لحساب الخدمة كاملاً | `-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----` |
 
 ---
 
-## 3. بنية البيانات والتوسّع المستقبلي (Backend Ready)
+## 3. التحقق من نجاح النشر المباشر
 
-التطبيق يطبق نمط الـ Repository Pattern عبر واجهة `IMenuRepository`:
-- **الحالي:** `LocalStorageMenuRepository` لتخزين ومعالجة البيانات محليًا دون خادم.
-- **المستقبلي:** لربط خادم backend أو REST API حقيقي أو قاعدة بيانات (مثل Firebase / PostgreSQL):
-  يكفي إنشاء صف جديد مثل `ApiMenuRepository implements IMenuRepository` وتمريره في `MenuContext` دون الحاجة لتعديل أي واجهة مستخدم أو مكون داخلي.
+1. افتح الرابط: `https://<YOUR_APP>.vercel.app/api/ping`
+   - يجب أن يرجع: `{"ok":true,"build":"v...","builtAt":"...","time":"..."}`
+2. افتح الرابط: `https://<YOUR_APP>.vercel.app/api/health`
+   - يجب أن يرجع: `{"ok":true,"databaseMode":"firebase-admin"}`
+3. في أسفل شاشة تسجيل الدخول إلى `/super-admin` يظهر رقم الإصدار (Build ID) المتطابق.
+
+---
+
+## 4. الاختبارات والتحقق البرمجي
+
+لتشغيل فحص الأنواع واختبارات دوال الخادم محلياً:
+```bash
+npm run lint   # فحص TypeScript بدون أخطاء
+npm test       # اختبار دوال الخادم ومطابقة كلمات المرور
+```

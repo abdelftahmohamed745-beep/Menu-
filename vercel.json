@@ -2,10 +2,8 @@
   "version": 2,
   "functions": {
     "api/*.ts": {
-      "maxDuration": 15
-    },
-    "api/*.mjs": {
-      "maxDuration": 15
+      "maxDuration": 15,
+      "includeFiles": "api/**"
     }
   },
   "rewrites": [

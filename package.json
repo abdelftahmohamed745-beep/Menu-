@@ -8,12 +8,12 @@
   },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild src/server/app.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/_server.mjs",
+    "build": "node scripts/generate-build-id.js && vite build && esbuild src/server/app.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/_server.mjs",
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist api/_server.mjs",
     "lint": "tsc --noEmit",
-    "test": "node --test test/*.test.js"
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
-import { getAdminDb, getAdminAuth } from './db';
+import { getAdminDb, getAdminAuth, isFirebaseAdminConfigured } from './db';
 import { cleanString, normalizeDigits } from './config';
 
 export const SUPER_ADMIN_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -53,8 +53,15 @@ export interface SessionPayload {
   exp: number;
 }
 
+export function isRequestHttps(req: Request): boolean {
+  try {
+    if (req.secure) return true;
+  } catch {}
+  return req.headers?.['x-forwarded-proto'] === 'https';
+}
+
 export function getCookieName(req: Request): string {
-  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const isHttps = isRequestHttps(req);
   const isProduction = process.env.NODE_ENV === 'production' && !process.env.AIS_DEV;
   // __Host- prefix requires HTTPS and path=/ with no Domain
   if (isProduction && isHttps) {
@@ -105,40 +112,60 @@ export function parseSignedToken(token?: string): SessionPayload | null {
  * Fetch or initialize the session version for a restaurant.
  */
 export async function getRestaurantSessionVersion(restaurantId: string): Promise<string> {
-  const db = getAdminDb();
-  const docRef = db.collection('sessions').doc(restaurantId);
-  const snap = await docRef.get();
-  if (snap.exists && snap.data()?.sessionVersion) {
-    return snap.data()!.sessionVersion;
+  if (!isFirebaseAdminConfigured()) return 'v1';
+  try {
+    const db = getAdminDb();
+    const docRef = db.collection('sessions').doc(restaurantId);
+    const snap = await docRef.get();
+    if (snap.exists && snap.data()?.sessionVersion) {
+      return snap.data()!.sessionVersion;
+    }
+    const newVer = crypto.randomBytes(8).toString('hex');
+    await docRef.set({ sessionVersion: newVer, updatedAt: new Date().toISOString() }, { merge: true });
+    return newVer;
+  } catch {
+    return 'v1';
   }
-  const newVer = crypto.randomBytes(8).toString('hex');
-  await docRef.set({ sessionVersion: newVer, updatedAt: new Date().toISOString() }, { merge: true });
-  return newVer;
 }
 
 export async function bumpRestaurantSessionVersion(restaurantId: string): Promise<void> {
-  const db = getAdminDb();
-  const newVer = crypto.randomBytes(8).toString('hex');
-  await db
-    .collection('sessions')
-    .doc(restaurantId)
-    .set({ sessionVersion: newVer, updatedAt: new Date().toISOString() }, { merge: true });
+  if (!isFirebaseAdminConfigured()) return;
+  try {
+    const db = getAdminDb();
+    const newVer = crypto.randomBytes(8).toString('hex');
+    await db
+      .collection('sessions')
+      .doc(restaurantId)
+      .set({ sessionVersion: newVer, updatedAt: new Date().toISOString() }, { merge: true });
+  } catch (err) {
+    console.warn('Failed to bump restaurant session version:', err);
+  }
 }
 
 export async function bumpGlobalSessionVersion(): Promise<void> {
-  const db = getAdminDb();
-  const newVer = crypto.randomBytes(8).toString('hex');
-  await db
-    .collection('sessions')
-    .doc('_global_super_admin')
-    .set({ sessionVersion: newVer, updatedAt: new Date().toISOString() }, { merge: true });
+  if (!isFirebaseAdminConfigured()) return;
+  try {
+    const db = getAdminDb();
+    const newVer = crypto.randomBytes(8).toString('hex');
+    await db
+      .collection('sessions')
+      .doc('_global_super_admin')
+      .set({ sessionVersion: newVer, updatedAt: new Date().toISOString() }, { merge: true });
+  } catch (err) {
+    console.warn('Failed to bump global session version:', err);
+  }
 }
 
 export async function getGlobalSessionVersion(): Promise<string> {
-  const db = getAdminDb();
-  const snap = await db.collection('sessions').doc('_global_super_admin').get();
-  if (snap.exists && snap.data()?.sessionVersion) {
-    return snap.data()!.sessionVersion;
+  if (!isFirebaseAdminConfigured()) return 'v1';
+  try {
+    const db = getAdminDb();
+    const snap = await db.collection('sessions').doc('_global_super_admin').get();
+    if (snap.exists && snap.data()?.sessionVersion) {
+      return snap.data()!.sessionVersion;
+    }
+  } catch {
+    // fallback
   }
   return 'v1';
 }
@@ -165,8 +192,8 @@ export function setSessionCookie(
   };
 
   const token = createSignedToken(payload);
-  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  const isAiStudio = Boolean(process.env.AIS_DEV || req.headers['sec-fetch-dest'] === 'iframe');
+  const isHttps = isRequestHttps(req);
+  const isAiStudio = Boolean(process.env.AIS_DEV || req.headers?.['sec-fetch-dest'] === 'iframe');
   const cookieName = getCookieName(req);
 
   res.cookie(cookieName, token, {
@@ -191,11 +218,19 @@ export function clearSessionCookie(req: Request, res: Response): void {
 export async function mintFirebaseCustomToken(claims: {
   role: 'super_admin' | 'restaurant_owner';
   venueId?: string;
-}): Promise<string> {
-  const auth = getAdminAuth();
-  const uid =
-    claims.role === 'super_admin'
-      ? `admin_${Date.now()}`
-      : `owner_${claims.venueId}_${Date.now()}`;
-  return await auth.createCustomToken(uid, claims);
+}): Promise<string | null> {
+  if (!isFirebaseAdminConfigured()) {
+    return null;
+  }
+  try {
+    const auth = getAdminAuth();
+    const uid =
+      claims.role === 'super_admin'
+        ? `admin_${Date.now()}`
+        : `owner_${claims.venueId}_${Date.now()}`;
+    return await auth.createCustomToken(uid, claims);
+  } catch (err) {
+    console.warn('[Session] Failed to mint Firebase Custom Token:', err);
+    return null;
+  }
 }
